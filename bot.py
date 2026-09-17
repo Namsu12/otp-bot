@@ -36,32 +36,100 @@ if not TURSO_URL or not TURSO_TOKEN:
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# ==================== TURSO DATABASE ====================
-import libsql_experimental as libsql
-
+# ==================== TURSO DATABASE (HTTP API) ====================
 class DB:
     def __init__(self):
         self.url = TURSO_URL
         self.auth = TURSO_TOKEN
         self.lock = threading.Lock()
-        print(f"🔗 Connecting to: {self.url}")
+        # Convert libsql:// to https:// for REST API
+        self.http_url = self.url.replace('libsql://', 'https://')
+        print(f"🔗 Turso HTTP: {self.http_url}")
+
+    def _pipeline(self, requests_list):
+        """Send batched SQL over HTTP"""
+        payload = {
+            "requests": requests_list
+        }
+        headers = {
+            "Authorization": f"Bearer {self.auth}",
+            "Content-Type": "application/json",
+        }
+        r = requests.post(
+            f"{self.http_url}/v2/pipeline",
+            json=payload,
+            headers=headers,
+            timeout=20,
+        )
+        return r
 
     def execute(self, sql, params=None):
         with self.lock:
             try:
-                conn = libsql.connect(database=self.url, auth_token=self.auth)
-                cur = conn.execute(sql, params or [])
-                rows = cur.fetchall()
-                conn.commit()
-                conn.close()
-                return rows
+                # Build args for positional params
+                args = []
+                if params:
+                    for p in params:
+                        if isinstance(p, int):
+                            args.append({"type": "integer", "value": str(p)})
+                        elif isinstance(p, float):
+                            args.append({"type": "float", "value": p})
+                        elif p is None:
+                            args.append({"type": "null"})
+                        else:
+                            args.append({"type": "text", "value": str(p)})
+
+                req = {
+                    "type": "execute",
+                    "stmt": {
+                        "sql": sql,
+                        "args": args,
+                    },
+                }
+                # Close request after
+                close_req = {"type": "close"}
+
+                r = self._pipeline([req, close_req])
+                if r.status_code != 200:
+                    print(f"⚠️ DB HTTP {r.status_code}: {r.text[:200]}")
+                    return None
+
+                data = r.json()
+                results = data.get('results', [])
+                if not results:
+                    return None
+
+                first = results[0]
+                if first.get('type') == 'error':
+                    print(f"⚠️ DB SQL error: {first.get('error')}")
+                    return None
+
+                if first.get('type') == 'execute':
+                    resp = first.get('response', {})
+                    result_data = resp.get('result', {})
+                    cols = [c.get('name') for c in result_data.get('cols', [])]
+                    rows_raw = result_data.get('rows', [])
+                    rows = []
+                    for row in rows_raw:
+                        new_row = []
+                        for cell in row:
+                            if cell is None:
+                                new_row.append(None)
+                            elif isinstance(cell, dict):
+                                new_row.append(cell.get('value'))
+                            else:
+                                new_row.append(cell)
+                        rows.append(new_row)
+                    return rows
+                return None
+
             except Exception as e:
                 print(f"⚠️ DB error: {e}")
                 return None
 
     def query(self, sql, params=None):
         r = self.execute(sql, params)
-        return [list(row) for row in r] if r else []
+        return r if r else []
 
     def query_one(self, sql, params=None):
         rows = self.query(sql, params)
