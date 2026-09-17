@@ -43,9 +43,18 @@ class DB:
         self.url = TURSO_URL
         self.auth = TURSO_TOKEN
         self.lock = threading.Lock()
+        print(f"🔗 Turso URL: {self.url[:50]}...")
+        print(f"🔑 Token length: {len(self.auth)}")
 
     def _client(self):
-        return libsql_client.create_client_sync(url=self.url, auth_token=self.auth)
+        import libsql_client
+        # Try both sync and async API names
+        if hasattr(libsql_client, 'create_client_sync'):
+            return libsql_client.create_client_sync(url=self.url, auth_token=self.auth)
+        else:
+            # Fallback to older/newer API
+            import libsql_experimental as libsql
+            return libsql.connect(database=self.url, auth_token=self.auth)
 
     def execute(self, sql, params=None):
         with self.lock:
