@@ -13,7 +13,6 @@ from telebot import types
 from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-import libsql_client
 
 # ==================== CONFIG ====================
 BOT_TOKEN = os.getenv('BOT_TOKEN', '')
@@ -38,39 +37,31 @@ if not TURSO_URL or not TURSO_TOKEN:
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # ==================== TURSO DATABASE ====================
+import libsql_experimental as libsql
+
 class DB:
     def __init__(self):
         self.url = TURSO_URL
         self.auth = TURSO_TOKEN
         self.lock = threading.Lock()
-        print(f"🔗 Turso URL: {self.url[:50]}...")
-        print(f"🔑 Token length: {len(self.auth)}")
-
-    def _client(self):
-        import libsql_client
-        # Try both sync and async API names
-        if hasattr(libsql_client, 'create_client_sync'):
-            return libsql_client.create_client_sync(url=self.url, auth_token=self.auth)
-        else:
-            # Fallback to older/newer API
-            import libsql_experimental as libsql
-            return libsql.connect(database=self.url, auth_token=self.auth)
+        print(f"🔗 Connecting to: {self.url}")
 
     def execute(self, sql, params=None):
         with self.lock:
             try:
-                with self._client() as client:
-                    result = client.execute(sql, params or [])
-                    return result
+                conn = libsql.connect(database=self.url, auth_token=self.auth)
+                cur = conn.execute(sql, params or [])
+                rows = cur.fetchall()
+                conn.commit()
+                conn.close()
+                return rows
             except Exception as e:
                 print(f"⚠️ DB error: {e}")
                 return None
 
     def query(self, sql, params=None):
         r = self.execute(sql, params)
-        if r and hasattr(r, 'rows'):
-            return [list(row) for row in r.rows]
-        return []
+        return [list(row) for row in r] if r else []
 
     def query_one(self, sql, params=None):
         rows = self.query(sql, params)
@@ -127,7 +118,6 @@ class DB:
         for sql in tables:
             self.execute(sql)
 
-        # Seed defaults
         defaults = {
             'otp_link': 'https://t.me/alohaotp',
             'numbers_per_user': '3',
