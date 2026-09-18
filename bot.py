@@ -2216,6 +2216,26 @@ def cmd_help(message):
 """
     bot.send_message(message.chat.id, text, parse_mode='Markdown')
 
+@bot.message_handler(commands=['debugdb'])
+def cmd_debugdb(message):
+    if not is_admin(message.from_user.id):
+        return
+    try:
+        panels = db.query("SELECT id, name, base_url, active FROM panels")
+        users = db.query("SELECT user_id, first_name FROM users LIMIT 5")
+        text = f"""
+🔍 *DB Debug*
+
+*Panels in DB:* `{len(panels)}`
+"""
+        for p in panels:
+            text += f"  • ID `{p[0]}` — `{p[1]}` — active: `{p[3]}`\n"
+        text += f"\n*Users in DB:* `{len(users)}`\n"
+        for u in users:
+            text += f"  • `{u[0]}` — {u[1]}\n"
+        bot.send_message(message.chat.id, text[:4000], parse_mode='Markdown')
+    except Exception as e:
+        bot.send_message(message.chat.id, f"Debug error: {e}")
 
 # ==================== STARTUP ====================
 if __name__ == '__main__':
