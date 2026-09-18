@@ -57,43 +57,62 @@ class DB:
             timeout=25,
         )
 
+    def _format_args(self, params):
+        args = []
+        if params:
+            for p in params:
+                if isinstance(p, bool):
+                    args.append({"type": "integer", "value": "1" if p else "0"})
+                elif isinstance(p, int):
+                    args.append({"type": "integer", "value": str(p)})
+                elif isinstance(p, float):
+                    args.append({"type": "float", "value": p})
+                elif p is None:
+                    args.append({"type": "null"})
+                else:
+                    args.append({"type": "text", "value": str(p)})
+        return args
+
     def execute(self, sql, params=None):
         with self.lock:
             try:
-                args = []
-                if params:
-                    for p in params:
-                        if isinstance(p, bool):
-                            args.append({"type": "integer", "value": "1" if p else "0"})
-                        elif isinstance(p, int):
-                            args.append({"type": "integer", "value": str(p)})
-                        elif isinstance(p, float):
-                            args.append({"type": "float", "value": p})
-                        elif p is None:
-                            args.append({"type": "null"})
-                        else:
-                            args.append({"type": "text", "value": str(p)})
+                args = self._format_args(params)
+                sql_upper = sql.strip().upper()
+                is_write = any(sql_upper.startswith(kw) for kw in
+                               ['INSERT', 'UPDATE', 'DELETE', 'DROP', 'CREATE', 'ALTER', 'REPLACE'])
 
-                req = {"type": "execute", "stmt": {"sql": sql, "args": args}}
-                close_req = {"type": "close"}
+                if is_write:
+                    pipeline = [
+                        {"type": "execute", "stmt": {"sql": "BEGIN", "args": []}},
+                        {"type": "execute", "stmt": {"sql": sql, "args": args}},
+                        {"type": "execute", "stmt": {"sql": "COMMIT", "args": []}},
+                        {"type": "close"}
+                    ]
+                    result_index = 1
+                else:
+                    pipeline = [
+                        {"type": "execute", "stmt": {"sql": sql, "args": args}},
+                        {"type": "close"}
+                    ]
+                    result_index = 0
 
-                r = self._pipeline([req, close_req])
+                r = self._pipeline(pipeline)
                 if r.status_code != 200:
-                    print(f"DB HTTP {r.status_code}: {r.text[:200]}")
+                    print(f"DB HTTP {r.status_code}: {r.text[:300]}")
                     return None
 
                 data = r.json()
                 results = data.get('results', [])
-                if not results:
+                if not results or len(results) <= result_index:
+                    return []
+
+                target = results[result_index]
+                if target.get('type') == 'error':
+                    print(f"DB SQL error: {target.get('error')}")
                     return None
 
-                first = results[0]
-                if first.get('type') == 'error':
-                    print(f"DB SQL error: {first.get('error')}")
-                    return None
-
-                if first.get('type') == 'execute':
-                    resp = first.get('response', {})
+                if target.get('type') == 'execute':
+                    resp = target.get('response', {})
                     result_data = resp.get('result', {})
                     rows_raw = result_data.get('rows', [])
                     rows = []
@@ -108,7 +127,7 @@ class DB:
                                 new_row.append(cell)
                         rows.append(new_row)
                     return rows
-                return None
+                return []
 
             except Exception as e:
                 print(f"DB error: {e}")
@@ -209,15 +228,12 @@ class DB:
             'bot_name': 'NBHC OTP Bot',
         }
         for k, v in defaults.items():
-            existing = self.query_one("SELECT value FROM settings WHERE key=?", [k])
-            if not existing:
-                self.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", [k, v])
+            self.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", [k, v])
 
         print("Database initialized")
 
 
 db = DB()
-
 
 # ==================== HELPERS ====================
 def get_setting(key, default=''):
@@ -256,7 +272,7 @@ def upsert_user(user_id, username, first_name):
     except Exception as e:
         print(f"upsert_user error: {e}")
     return False
-
+    
 def get_user(user_id):
     row = db.query_one("SELECT user_id, username, first_name, first_seen, otp_count, verified FROM users WHERE user_id=?", [user_id])
     if not row:
