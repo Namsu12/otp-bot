@@ -807,46 +807,22 @@ Need help? Contact admin.
             bot.send_message(call.message.chat.id, text, parse_mode='Markdown', reply_markup=back_to_main())
             return
 
-        # ========== ADMIN PANEL ==========
-        if data.startswith("admin_"):
-            handle_admin(call)
+            # ========== ADMIN PANEL ==========
+    if data == "admin_panel":
+        if not is_admin(user_id):
+            bot.answer_callback_query(call.id, "⛔ Admins only")
             return
+        bot.answer_callback_query(call.id)
+        show_admin_panel(call)
+        return
 
-        if data == "admin_panel":
-            if not is_admin(user_id):
-                bot.answer_callback_query(call.id, "⛔ Admins only")
-                return
-            bot.answer_callback_query(call.id)
-            markup = types.InlineKeyboardMarkup(row_width=2)
-            markup.add(
-                types.InlineKeyboardButton("⚙️ Add Service", callback_data="admin_add_service"),
-                types.InlineKeyboardButton("🌍 Add Country", callback_data="admin_add_country")
-            )
-            markup.add(
-                types.InlineKeyboardButton("📥 Add Numbers", callback_data="admin_add_numbers"),
-                types.InlineKeyboardButton("📋 List Numbers", callback_data="admin_list_numbers")
-            )
-            markup.add(
-                types.InlineKeyboardButton("🔗 Set OTP Link", callback_data="admin_set_otp_link"),
-                types.InlineKeyboardButton("⚙️ Numbers/User", callback_data="admin_set_npu")
-            )
-            markup.add(
-                types.InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast"),
-                types.InlineKeyboardButton("👥 Users", callback_data="admin_users")
-            )
-            markup.add(
-                types.InlineKeyboardButton("👑 Admins", callback_data="admin_admins"),
-                types.InlineKeyboardButton("📊 Stats", callback_data="admin_stats")
-            )
-            markup.add(types.InlineKeyboardButton("🔙 Main Menu", callback_data="back_main"))
-            bot.edit_message_text("🛠️ *Admin Panel*\n\nPick an option:",
-                                  call.message.chat.id, call.message.message_id,
-                                  parse_mode='Markdown', reply_markup=markup)
-            return
+    if data.startswith("admin_"):
+        handle_admin(call)
+        return
 
-    except Exception as e:
-        print(f"Callback error: {e}")
-        bot.answer_callback_query(call.id, "⚠️ Error, try again")
+except Exception as e:
+    print(f"Callback error: {e}")
+    bot.answer_callback_query(call.id, "⚠️ Error, try again")
 
 # ==================== ADMIN PANEL ====================
 def handle_admin(call):
