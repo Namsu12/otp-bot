@@ -47,8 +47,8 @@ class DB:
         with self.lock:
             try:
                 import asyncio
-                async def run():
-                    client = libsql_client.create_client(url=self.url, auth_token=self.auth)
+async def run():
+    client = libsql_client.create_client(url=self.url.replace('wss://', 'https://'), auth_token=self.auth)
                     try:
                         if params:
                             result = await client.execute(sql, params)
