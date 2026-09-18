@@ -37,6 +37,10 @@ bot = telebot.TeleBot(BOT_TOKEN)
 
 # ==================== TURSO DATABASE ====================
 class DB:
+
+
+
+    
     def __init__(self):
         self.url = TURSO_URL
         self.auth = TURSO_TOKEN
@@ -47,27 +51,25 @@ class DB:
         with self.lock:
             try:
                 import asyncio
-async def run():
-    client = libsql_client.create_client(url=self.url.replace('wss://', 'https://'), auth_token=self.auth)
+                import libsql_client
+
+                http_url = self.url.replace('wss://', 'https://').replace('libsql://', 'https://')
+
+                async def run():
+                    client = libsql_client.create_client(url=http_url, auth_token=self.auth)
                     try:
                         if params:
                             result = await client.execute(sql, params)
                         else:
                             result = await client.execute(sql)
+                    finally:
                         try:
                             await client.close()
                         except:
                             pass
-                        if hasattr(result, 'rows'):
-                            return [list(r) for r in result.rows]
-                        return []
-                    except Exception as e:
-                        print(f"DB inner error: {e}")
-                        try:
-                            await client.close()
-                        except:
-                            pass
-                        return None
+                    if hasattr(result, 'rows'):
+                        return [list(r) for r in result.rows]
+                    return []
                 return asyncio.run(run())
             except Exception as e:
                 print(f"DB error: {e}")
@@ -83,78 +85,16 @@ async def run():
 
     def init_tables(self):
         tables = [
-            """CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT,
-                first_name TEXT,
-                first_seen TEXT,
-                otp_count INTEGER DEFAULT 0,
-                verified INTEGER DEFAULT 0
-            )""",
-            """CREATE TABLE IF NOT EXISTS admins (
-                user_id INTEGER PRIMARY KEY,
-                added_by INTEGER,
-                added_at TEXT
-            )""",
-            """CREATE TABLE IF NOT EXISTS panels (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT,
-                base_url TEXT,
-                username TEXT,
-                password TEXT,
-                active INTEGER DEFAULT 1,
-                last_check TEXT,
-                created_at TEXT
-            )""",
-            """CREATE TABLE IF NOT EXISTS services (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                panel_id INTEGER,
-                name TEXT,
-                created_at TEXT
-            )""",
-            """CREATE TABLE IF NOT EXISTS countries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                service_id INTEGER,
-                name TEXT,
-                code TEXT,
-                numbers_per_user INTEGER DEFAULT 3,
-                created_at TEXT
-            )""",
-            """CREATE TABLE IF NOT EXISTS numbers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                country_id INTEGER,
-                phone TEXT,
-                assigned_to INTEGER DEFAULT 0,
-                assigned_at TEXT,
-                created_at TEXT
-            )""",
-            """CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )""",
-            """CREATE TABLE IF NOT EXISTS force_join (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                chat_id TEXT,
-                chat_title TEXT,
-                invite_link TEXT,
-                added_at TEXT
-            )""",
-            """CREATE TABLE IF NOT EXISTS withdrawals (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                amount REAL,
-                method TEXT,
-                details TEXT,
-                status TEXT DEFAULT 'pending',
-                requested_at TEXT,
-                processed_at TEXT
-            )""",
-            """CREATE TABLE IF NOT EXISTS logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                event TEXT,
-                details TEXT,
-                timestamp TEXT
-            )""",
+            "CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, first_seen TEXT, otp_count INTEGER DEFAULT 0, verified INTEGER DEFAULT 0)",
+            "CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY, added_by INTEGER, added_at TEXT)",
+            "CREATE TABLE IF NOT EXISTS panels (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, base_url TEXT, username TEXT, password TEXT, active INTEGER DEFAULT 1, last_check TEXT, created_at TEXT)",
+            "CREATE TABLE IF NOT EXISTS services (id INTEGER PRIMARY KEY AUTOINCREMENT, panel_id INTEGER, name TEXT, created_at TEXT)",
+            "CREATE TABLE IF NOT EXISTS countries (id INTEGER PRIMARY KEY AUTOINCREMENT, service_id INTEGER, name TEXT, code TEXT, numbers_per_user INTEGER DEFAULT 3, created_at TEXT)",
+            "CREATE TABLE IF NOT EXISTS numbers (id INTEGER PRIMARY KEY AUTOINCREMENT, country_id INTEGER, phone TEXT, assigned_to INTEGER DEFAULT 0, assigned_at TEXT, created_at TEXT)",
+            "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)",
+            "CREATE TABLE IF NOT EXISTS force_join (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT, chat_title TEXT, invite_link TEXT, added_at TEXT)",
+            "CREATE TABLE IF NOT EXISTS withdrawals (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, amount REAL, method TEXT, details TEXT, status TEXT DEFAULT 'pending', requested_at TEXT, processed_at TEXT)",
+            "CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT, details TEXT, timestamp TEXT)",
         ]
         for sql in tables:
             self.execute(sql)
@@ -172,12 +112,10 @@ async def run():
 
         check = self.query("SELECT value FROM settings WHERE key=?", ['otp_link'])
         print(f"DB write test: {check}")
-
         print("Database initialized")
 
 
 db = DB()
-
 
 # ==================== HELPERS ====================
 def get_setting(key, default=''):
