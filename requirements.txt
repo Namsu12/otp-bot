@@ -3,4 +3,4 @@ requests
 beautifulsoup4
 urllib3
 staypresent[prod]
-libsql-experimental
+libsql-client
