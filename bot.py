@@ -248,15 +248,14 @@ def get_all_admins():
 
 
 def upsert_user(user_id, username, first_name):
-    existing = db.query_one("SELECT user_id FROM users WHERE user_id=?", [user_id])
-    if not existing:
+    try:
         db.execute(
-            "INSERT INTO users (user_id, username, first_name, first_seen, otp_count, verified) VALUES (?, ?, ?, ?, 0, 0)",
+            "INSERT OR IGNORE INTO users (user_id, username, first_name, first_seen, otp_count, verified) VALUES (?, ?, ?, ?, 0, 0)",
             [user_id, username or '', first_name or '', datetime.now().isoformat()]
         )
-        return True
+    except Exception as e:
+        print(f"upsert_user error: {e}")
     return False
-
 
 def get_user(user_id):
     row = db.query_one("SELECT user_id, username, first_name, first_seen, otp_count, verified FROM users WHERE user_id=?", [user_id])
