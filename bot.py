@@ -35,99 +35,35 @@ bot = telebot.TeleBot(BOT_TOKEN)
 
 
 # ==================== TURSO DATABASE ====================
-class DB:
+                class DB:
     def __init__(self):
         self.url = TURSO_URL
         self.auth = TURSO_TOKEN
         self.lock = threading.Lock()
-        self.http_url = self.url.replace('libsql://', 'https://')
-        print(f"Turso HTTP: {self.http_url}")
-
-    def _pipeline(self, requests_list):
-        payload = {"requests": requests_list}
-        headers = {
-            "Authorization": f"Bearer {self.auth}",
-            "Content-Type": "application/json",
-        }
-        return requests.post(
-            f"{self.http_url}/v2/pipeline",
-            json=payload,
-            headers=headers,
-            timeout=25,
-        )
-
-    def _format_args(self, params):
-        args = []
-        if params:
-            for p in params:
-                if isinstance(p, bool):
-                    args.append({"type": "integer", "value": "1" if p else "0"})
-                elif isinstance(p, int):
-                    args.append({"type": "integer", "value": str(p)})
-                elif isinstance(p, float):
-                    args.append({"type": "float", "value": p})
-                elif p is None:
-                    args.append({"type": "null"})
-                else:
-                    args.append({"type": "text", "value": str(p)})
-        return args
+        try:
+            import libsql_experimental as libsql
+            self.libsql = libsql
+            print(f"Turso: {self.url}")
+            # Quick connection test
+            test_conn = libsql.connect(database=self.url, auth_token=self.auth)
+            test_conn.execute("SELECT 1")
+            test_conn.close()
+            print("Turso connection OK")
+        except Exception as e:
+            print(f"Turso init error: {e}")
+            self.libsql = None
 
     def execute(self, sql, params=None):
+        if not self.libsql:
+            return None
         with self.lock:
             try:
-                args = self._format_args(params)
-                sql_upper = sql.strip().upper()
-                is_write = any(sql_upper.startswith(kw) for kw in
-                               ['INSERT', 'UPDATE', 'DELETE', 'DROP', 'CREATE', 'ALTER', 'REPLACE'])
-
-                if is_write:
-                    pipeline = [
-                        {"type": "execute", "stmt": {"sql": "BEGIN", "args": []}},
-                        {"type": "execute", "stmt": {"sql": sql, "args": args}},
-                        {"type": "execute", "stmt": {"sql": "COMMIT", "args": []}},
-                        {"type": "close"}
-                    ]
-                    result_index = 1
-                else:
-                    pipeline = [
-                        {"type": "execute", "stmt": {"sql": sql, "args": args}},
-                        {"type": "close"}
-                    ]
-                    result_index = 0
-
-                r = self._pipeline(pipeline)
-                if r.status_code != 200:
-                    print(f"DB HTTP {r.status_code}: {r.text[:300]}")
-                    return None
-
-                data = r.json()
-                results = data.get('results', [])
-                if not results or len(results) <= result_index:
-                    return []
-
-                target = results[result_index]
-                if target.get('type') == 'error':
-                    print(f"DB SQL error: {target.get('error')}")
-                    return None
-
-                if target.get('type') == 'execute':
-                    resp = target.get('response', {})
-                    result_data = resp.get('result', {})
-                    rows_raw = result_data.get('rows', [])
-                    rows = []
-                    for row in rows_raw:
-                        new_row = []
-                        for cell in row:
-                            if cell is None:
-                                new_row.append(None)
-                            elif isinstance(cell, dict):
-                                new_row.append(cell.get('value'))
-                            else:
-                                new_row.append(cell)
-                        rows.append(new_row)
-                    return rows
-                return []
-
+                conn = self.libsql.connect(database=self.url, auth_token=self.auth)
+                cur = conn.execute(sql, params or [])
+                rows = cur.fetchall()
+                conn.commit()
+                conn.close()
+                return [list(r) for r in rows]
             except Exception as e:
                 print(f"DB error: {e}")
                 return None
@@ -229,12 +165,14 @@ class DB:
         for k, v in defaults.items():
             self.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", [k, v])
 
+        # Confirm the write actually persisted
+        check = self.query("SELECT value FROM settings WHERE key=?", ['otp_link'])
+        print(f"DB write test: {check}")
+
         print("Database initialized")
 
 
 db = DB()
-
-
 # ==================== HELPERS ====================
 def get_setting(key, default=''):
     row = db.query_one("SELECT value FROM settings WHERE key=?", [key])
