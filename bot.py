@@ -15,12 +15,7 @@ from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-try:
-    import libsql_experimental as libsql
-    LIBSQL_OK = True
-except Exception as e:
-    print(f"libsql not available: {e}")
-    LIBSQL_OK = False
+import libsql_client
 
 # ==================== CONFIG ====================
 BOT_TOKEN = os.getenv('BOT_TOKEN', '')
@@ -46,24 +41,34 @@ class DB:
         self.url = TURSO_URL
         self.auth = TURSO_TOKEN
         self.lock = threading.Lock()
-        print(f"Turso URL: {self.url}")
-        if not LIBSQL_OK:
-            print("WARNING: libsql_experimental is not installed!")
+        print(f"Turso: {self.url}")
 
     def execute(self, sql, params=None):
-        if not LIBSQL_OK:
-            return None
         with self.lock:
             try:
-                conn = libsql.connect(database=self.url, auth_token=self.auth)
-                cur = conn.execute(sql, params or [])
-                try:
-                    rows = cur.fetchall()
-                except Exception:
-                    rows = []
-                conn.commit()
-                conn.close()
-                return [list(r) for r in rows] if rows else []
+                import asyncio
+                async def run():
+                    client = libsql_client.create_client(url=self.url, auth_token=self.auth)
+                    try:
+                        if params:
+                            result = await client.execute(sql, params)
+                        else:
+                            result = await client.execute(sql)
+                        try:
+                            await client.close()
+                        except:
+                            pass
+                        if hasattr(result, 'rows'):
+                            return [list(r) for r in result.rows]
+                        return []
+                    except Exception as e:
+                        print(f"DB inner error: {e}")
+                        try:
+                            await client.close()
+                        except:
+                            pass
+                        return None
+                return asyncio.run(run())
             except Exception as e:
                 print(f"DB error: {e}")
                 return None
