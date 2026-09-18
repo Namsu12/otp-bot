@@ -228,9 +228,17 @@ class DB:
             'bot_name': 'NBHC OTP Bot',
         }
         for k, v in defaults.items():
-            self.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", [k, v])
+    self.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", [k, v])
 
-        print("Database initialized")
+test_result = self.execute(
+    "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
+    ['__test__', 'hello']
+)
+read_back = self.query("SELECT value FROM settings WHERE key=?", ['__test__'])
+print(f"TURSO TEST - write: {test_result}")
+print(f"TURSO TEST - read: {read_back}")
+
+print("Database initialized")
 
 
 db = DB()
