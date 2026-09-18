@@ -211,7 +211,7 @@ class DB:
         for k, v in defaults.items():
             existing = self.query_one("SELECT value FROM settings WHERE key=?", [k])
             if not existing:
-                self.execute("INSERT INTO settings (key, value) VALUES (?, ?)", [k, v])
+                self.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", [k, v])
 
         print("Database initialized")
 
