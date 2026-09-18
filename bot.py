@@ -32,10 +32,9 @@ if not TURSO_URL or not TURSO_TOKEN:
     exit(1)
 
 bot = telebot.TeleBot(BOT_TOKEN)
-BASE_URL_DEFAULT = 'http://51.77.52.79/ints'
 
 
-# ==================== TURSO DATABASE (HTTP API) ====================
+# ==================== TURSO DATABASE ====================
 class DB:
     def __init__(self):
         self.url = TURSO_URL
@@ -220,28 +219,21 @@ class DB:
             self.execute(sql)
 
         defaults = {
-    'otp_link': 'https://t.me/alohaotp',
-    'support_contact': '@your_username',
-    'numbers_per_user': '3',
-    'country_code_default': '1',
-    'force_join_enabled': '0',
-    'bot_name': 'NBHC OTP Bot',
-}
-for k, v in defaults.items():
-    self.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", [k, v])
+            'otp_link': 'https://t.me/alohaotp',
+            'support_contact': '@your_username',
+            'numbers_per_user': '3',
+            'country_code_default': '1',
+            'force_join_enabled': '0',
+            'bot_name': 'NBHC OTP Bot',
+        }
+        for k, v in defaults.items():
+            self.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", [k, v])
 
-test_result = self.execute(
-    "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
-    ['__test__', 'hello']
-)
-read_back = self.query("SELECT value FROM settings WHERE key=?", ['__test__'])
-print(f"TURSO TEST - write: {test_result}")
-print(f"TURSO TEST - read: {read_back}")
-
-print("Database initialized")
+        print("Database initialized")
 
 
 db = DB()
+
 
 # ==================== HELPERS ====================
 def get_setting(key, default=''):
@@ -250,11 +242,7 @@ def get_setting(key, default=''):
 
 
 def set_setting(key, value):
-    existing = db.query_one("SELECT value FROM settings WHERE key=?", [key])
-    if existing:
-        db.execute("UPDATE settings SET value=? WHERE key=?", [str(value), key])
-    else:
-        db.execute("INSERT INTO settings (key, value) VALUES (?, ?)", [key, str(value)])
+    db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", [key, str(value)])
 
 
 def is_admin(user_id):
@@ -267,7 +255,7 @@ def is_admin(user_id):
 def get_all_admins():
     ids = [SUPER_ADMIN]
     for row in db.query("SELECT user_id FROM admins"):
-        ids.append(row[0])
+        ids.append(int(row[0]))
     return ids
 
 
@@ -279,14 +267,14 @@ def upsert_user(user_id, username, first_name):
         )
     except Exception as e:
         print(f"upsert_user error: {e}")
-    return False
-    
+
+
 def get_user(user_id):
     row = db.query_one("SELECT user_id, username, first_name, first_seen, otp_count, verified FROM users WHERE user_id=?", [user_id])
     if not row:
         return None
     return {
-        'user_id': row[0], 'username': row[1], 'first_name': row[2],
+        'user_id': int(row[0]), 'username': row[1], 'first_name': row[2],
         'first_seen': row[3], 'otp_count': int(row[4]) if row[4] else 0,
         'verified': int(row[5]) if row[5] else 0
     }
@@ -303,9 +291,7 @@ def log_event(event, details=''):
 
 
 def get_active_panels():
-    return db.query("SELECT id, name, base_url, username, password FROM panels WHERE active=1")
-
-# ==================== DASHBOARD SCRAPER (Multi-Panel) ====================
+    return db.query("SELECT id, name, base_url, username, password FROM panels WHERE active=1")# ==================== DASHBOARD SCRAPER ====================
 class Dashboard:
     def __init__(self, panel_id, name, base_url, username, password):
         self.panel_id = panel_id
@@ -514,18 +500,17 @@ dashboards_lock = threading.Lock()
 
 
 def load_all_dashboards():
-    """Load/refresh all active dashboards"""
     with dashboards_lock:
         panels = get_active_panels()
         new_map = {}
         for p in panels:
             panel_id, name, base_url, username, password = p
-            if panel_id in active_dashboards:
-                # keep existing (already logged in)
-                new_map[panel_id] = active_dashboards[panel_id]
+            pid = int(panel_id)
+            if pid in active_dashboards:
+                new_map[pid] = active_dashboards[pid]
             else:
-                new_map[panel_id] = Dashboard(panel_id, name, base_url, username, password)
-                print(f"➕ Loaded panel: {name}")
+                new_map[pid] = Dashboard(pid, name, base_url, username, password)
+                print(f"Loaded panel: {name}")
         active_dashboards.clear()
         active_dashboards.update(new_map)
 
@@ -564,42 +549,27 @@ def send_otp_to_users(sms):
     user_id = find_user_for_number(phone)
     display_num = format_number_for_user(phone, user_id) if user_id else phone
 
-    user_msg = f"""🔐 *NEW OTP RECEIVED!*
-
-📱 *Number:* `{display_num}`
-📨 *From:* {cli}
-🔑 *OTP:* `{otp}`
-
-💬 *Message:*
-{text_body[:300]}
-
-🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-🎛️ _Panel: {panel_name}_"""
+    user_msg = f"🔐 *NEW OTP RECEIVED!*\n\n📱 *Number:* `{display_num}`\n📨 *From:* {cli}\n🔑 *OTP:* `{otp}`\n\n💬 *Message:*\n{text_body[:300]}\n\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n🎛️ _Panel: {panel_name}_"
 
     if user_id:
         try:
             bot.send_message(user_id, user_msg, parse_mode='Markdown')
             db.execute("UPDATE users SET otp_count = otp_count + 1 WHERE user_id=?", [user_id])
-            print(f"✅ OTP → user {user_id}: {otp}")
+            print(f"OTP to user {user_id}: {otp}")
         except Exception as e:
-            print(f"❌ Failed to send to {user_id}: {e}")
+            print(f"Failed to send to {user_id}: {e}")
 
-    group_msg = f"""🔐 *OTP — {display_num}*
-
-{user_msg}
-
-👤 *Assigned to:* `{user_id if user_id else 'Unassigned'}`"""
+    group_msg = f"🔐 *OTP — {display_num}*\n\n{user_msg}\n\n👤 *Assigned to:* `{user_id if user_id else 'Unassigned'}`"
     try:
         bot.send_message(CHAT_ID, group_msg, parse_mode='Markdown')
     except Exception as e:
-        print(f"❌ Group send failed: {e}")
+        print(f"Group send failed: {e}")
 
-    log_event('OTP', f"{otp} for {display_num} → user {user_id}")
+    log_event('OTP', f"{otp} for {display_num} -> user {user_id}")
 
 
 def monitor_panel(dashboard):
-    """Monitor one dashboard"""
-    print(f"🔄 Monitor started for [{dashboard.name}]")
+    print(f"Monitor started for [{dashboard.name}]")
     while True:
         try:
             if not dashboard.is_logged_in:
@@ -613,33 +583,28 @@ def monitor_panel(dashboard):
                     dashboard.processed_sms.add(msg['hash'])
                     send_otp_to_users(msg)
         except Exception as e:
-            print(f'❌ [{dashboard.name}] Monitor error: {e}')
+            print(f'[{dashboard.name}] Monitor error: {e}')
         time.sleep(10)
 
 
 def start_all_monitors():
     panels = get_all_panels()
     if not panels:
-        print("⚠️ No active panels to monitor")
+        print("No active panels to monitor")
         return
-    for dashboard in panels:
-        threading.Thread(target=monitor_panel, args=(dashboard,), daemon=True).start()
-    print(f"✅ Started {len(panels)} monitor thread(s)")
-
-# ==================== FORCE JOIN ====================
+    for d in panels:
+        threading.Thread(target=monitor_panel, args=(d,), daemon=True).start()
+    print(f"Started {len(panels)} monitor thread(s)")# ==================== FORCE JOIN ====================
 def get_force_join_channels():
     return db.query("SELECT id, chat_id, chat_title, invite_link FROM force_join ORDER BY id")
 
 
 def check_user_joined(user_id):
-    """Check if user is member of all force-join channels"""
     if get_setting('force_join_enabled', '0') != '1':
         return True
-
     channels = get_force_join_channels()
     if not channels:
         return True
-
     for ch in channels:
         chat_id = ch[1]
         try:
@@ -648,7 +613,6 @@ def check_user_joined(user_id):
                 return False
         except Exception as e:
             print(f"Force-join check error for {chat_id}: {e}")
-            # If we can't check (bot not admin), let them pass
             continue
     return True
 
@@ -660,8 +624,8 @@ def force_join_keyboard():
         title = ch[2] or 'Channel'
         link = ch[3]
         if link:
-            markup.add(types.InlineKeyboardButton(f"📢 {title}", url=link))
-    markup.add(types.InlineKeyboardButton("✅ I Have Joined — Verify", callback_data="verify_join"))
+            markup.add(types.InlineKeyboardButton(f"📢 {title}", url=link, style='primary'))
+    markup.add(types.InlineKeyboardButton("✅ I Have Joined - Verify", callback_data="verify_join", style='success'))
     return markup
 
 
@@ -669,16 +633,10 @@ def send_force_join_message(chat_id, first_name=''):
     channels = get_force_join_channels()
     if not channels:
         return False
-    text = f"""
-🔒 *Access Restricted*
-
-Hello {first_name}! To use this bot, you must join the following channels:
-
-"""
+    text = f"🔒 *Access Restricted*\n\nHello {first_name}! To use this bot, you must join the following:\n\n"
     for i, ch in enumerate(channels, 1):
         text += f"{i}. *{ch[2] or 'Channel'}*\n"
     text += "\nOnce you've joined all, tap the button below 👇"
-
     try:
         bot.send_message(chat_id, text, parse_mode='Markdown',
                          reply_markup=force_join_keyboard())
@@ -689,55 +647,34 @@ Hello {first_name}! To use this bot, you must join the following channels:
 
 # ==================== KEYBOARDS ====================
 def reply_keyboard(user_id):
-    """Bottom reply keyboard (persistent)"""
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    btn_get = types.KeyboardButton("📱 Get Number")
-    btn_withdraw = types.KeyboardButton("💸 Withdrawal")
-    btn_balance = types.KeyboardButton("💰 Balance")
-    btn_support = types.KeyboardButton("💬 Support")
-    markup.add(btn_get, btn_withdraw)
-    markup.add(btn_balance, btn_support)
+    markup.add(
+        types.KeyboardButton("📱 Get Number"),
+        types.KeyboardButton("💸 Withdrawal")
+    )
+    markup.add(
+        types.KeyboardButton("💰 Balance"),
+        types.KeyboardButton("💬 Support")
+    )
     if is_admin(user_id):
         markup.add(types.KeyboardButton("🛠️ Admin Panel"))
     return markup
 
 
-def main_menu_inline(user_id):
-    """Colored inline main menu"""
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    # Get Number (green style hint)
-    markup.add(types.InlineKeyboardButton("📱 Get Number", callback_data="get_number"))
-    markup.add(
-        types.InlineKeyboardButton("💸 Withdrawal", callback_data="withdraw"),
-        types.InlineKeyboardButton("💰 Balance", callback_data="balance")
-    )
-    markup.add(
-        types.InlineKeyboardButton("🌍 Available Country", callback_data="country_list"),
-        types.InlineKeyboardButton("📊 Status", callback_data="status")
-    )
-    markup.add(types.InlineKeyboardButton("💬 Support", callback_data="support"))
-    if is_admin(user_id):
-        markup.add(types.InlineKeyboardButton("🛠️ Admin Panel", callback_data="admin_panel"))
-    return markup
-
-
 def back_to_main_btn():
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("🔙 Main Menu", callback_data="back_main"))
+    markup.add(types.InlineKeyboardButton("🔙 Main Menu", callback_data="back_main", style='primary'))
     return markup
 
 
-def services_menu(panel_id=None):
-    if panel_id:
-        services = db.query("SELECT id, name FROM services WHERE panel_id=? ORDER BY name", [panel_id])
-    else:
-        services = db.query("SELECT id, name FROM services ORDER BY name")
+def services_menu():
+    services = db.query("SELECT id, name FROM services ORDER BY name")
     if not services:
         return None, "❌ *No services available yet.*\n\nAdmin needs to add services first."
     markup = types.InlineKeyboardMarkup(row_width=2)
-    buttons = [types.InlineKeyboardButton(f"⚙️ {s[1]}", callback_data=f"svc_{s[0]}") for s in services]
+    buttons = [types.InlineKeyboardButton(f"⚙️ {s[1]}", callback_data=f"svc_{s[0]}", style='primary') for s in services]
     markup.add(*buttons)
-    markup.add(types.InlineKeyboardButton("🔙 Main Menu", callback_data="back_main"))
+    markup.add(types.InlineKeyboardButton("🔙 Main Menu", callback_data="back_main", style='danger'))
     return markup, "⚙️ *Select a Service:*"
 
 
@@ -749,10 +686,10 @@ def countries_menu(service_id):
     if not countries:
         return None, f"❌ *No countries for {service[0]} yet.*"
     markup = types.InlineKeyboardMarkup(row_width=2)
-    buttons = [types.InlineKeyboardButton(f"🌍 {c[1]} ({c[2]})", callback_data=f"ctry_{c[0]}") for c in countries]
+    buttons = [types.InlineKeyboardButton(f"🌍 {c[1]} ({c[2]})", callback_data=f"ctry_{c[0]}", style='success') for c in countries]
     markup.add(*buttons)
-    markup.add(types.InlineKeyboardButton("🔙 Services", callback_data="get_number"))
-    return markup, f"🌍 *{service[0]}* — Select a Country:"
+    markup.add(types.InlineKeyboardButton("🔙 Services", callback_data="get_number", style='primary'))
+    return markup, f"🌍 *{service[0]}* - Select a Country:"
 
 
 def numbers_screen(user_id, service_id, country_id):
@@ -806,8 +743,8 @@ def numbers_screen(user_id, service_id, country_id):
     else:
         assigned_text = "_No numbers available right now._"
 
-    title = f"🌍 *{country[0]} ({service[0]}) — {len(assigned)} Numbers Assigned:*"
-    text = f"{title}\n\n*Country:* {country[0]} — {code}\n\n{assigned_text}\n\n📦 *Stock Left:* {stock_count}\n⏳ _Waiting for OTP..._"
+    title = f"🌍 *{country[0]} ({service[0]}) - {len(assigned)} Numbers Assigned:*"
+    text = f"{title}\n\n*Country:* {country[0]} - {code}\n\n{assigned_text}\n\n📦 *Stock Left:* {stock_count}\n⏳ _Waiting for OTP..._"
 
     markup = types.InlineKeyboardMarkup(row_width=1)
 
@@ -819,78 +756,49 @@ def numbers_screen(user_id, service_id, country_id):
             num_display = raw
         markup.add(types.InlineKeyboardButton(
             f"📋 {num_display}",
-            callback_data=f"copy_{num_display}"
+            callback_data=f"copy_{num_display}",
+            style='success'
         ))
 
-    markup.add(types.InlineKeyboardButton("🔄 Change Numbers", callback_data=f"chgnum_{service_id}_{country_id}"))
+    markup.add(types.InlineKeyboardButton("🔄 Change Numbers", callback_data=f"chgnum_{service_id}_{country_id}", style='primary'))
     markup.row(
-        types.InlineKeyboardButton("🌍 Change Country", callback_data=f"svc_{service_id}"),
-        types.InlineKeyboardButton("⚙️ Change Service", callback_data="get_number")
+        types.InlineKeyboardButton("🌍 Change Country", callback_data=f"svc_{service_id}", style='success'),
+        types.InlineKeyboardButton("⚙️ Change Service", callback_data="get_number", style='primary')
     )
 
     toggle_label = "🟢 Country Code: ON" if code_on else "🔴 Country Code: OFF"
-    markup.add(types.InlineKeyboardButton(toggle_label, callback_data=f"togglecc_{service_id}_{country_id}"))
+    toggle_style = 'success' if code_on else 'danger'
+    markup.add(types.InlineKeyboardButton(toggle_label, callback_data=f"togglecc_{service_id}_{country_id}", style=toggle_style))
 
     otp_link = get_setting('otp_link', 'https://t.me/alohaotp')
-    markup.add(types.InlineKeyboardButton("📬 View OTP", url=otp_link))
+    markup.add(types.InlineKeyboardButton("📬 View OTP", url=otp_link, style='primary'))
 
-    markup.add(types.InlineKeyboardButton("🔙 Main Menu", callback_data="back_main"))
+    markup.add(types.InlineKeyboardButton("🔙 Main Menu", callback_data="back_main", style='danger'))
 
     return markup, text
 
 
-# ==================== /start COMMAND ====================
+# ==================== /start ====================
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     user_id = message.from_user.id
     first_name = message.from_user.first_name or 'Friend'
     upsert_user(user_id, message.from_user.username, first_name)
 
-    # Force join check
     if not check_user_joined(user_id):
         send_force_join_message(message.chat.id, first_name)
         return
 
-    text = f"""
-👋 *Welcome to {get_setting('bot_name', 'NBHC OTP Bot')}*
-
-Get virtual numbers, receive OTPs, and manage your account — all from here.
-
-*Hello {first_name}!*
-
-Select an option below 👇
-"""
+    text = f"👋 *Welcome to {get_setting('bot_name', 'NBHC OTP Bot')}*\n\nGet virtual numbers, receive OTPs, and manage your account - all from here.\n\n*Hello {first_name}!*\n\nUse the buttons below 👇"
     bot.send_message(message.chat.id, text, parse_mode='Markdown',
                      reply_markup=reply_keyboard(user_id))
-    bot.send_message(message.chat.id, "📋 *Quick Menu:*", parse_mode='Markdown',
-                     reply_markup=main_menu_inline(user_id))
-
-
-@bot.message_handler(commands=['status'])
-def cmd_status(message):
-    panels = get_all_panels()
-    total_services = db.query_one("SELECT COUNT(*) FROM services")
-    total_numbers = db.query_one("SELECT COUNT(*) FROM numbers")
-    total_users = db.query_one("SELECT COUNT(*) FROM users")
-
-    text = f"""
-📊 *Bot Status*
-
-🎛️ Active Panels: `{len(panels)}`
-⚙️ Services: `{int(total_services[0]) if total_services else 0}`
-📞 Total Numbers: `{int(total_numbers[0]) if total_numbers else 0}`
-👥 Users: `{int(total_users[0]) if total_users else 0}`
-
-✅ Bot is running 24/7
-☁️ Host: Koyeb Cloud
-"""
-    bot.send_message(message.chat.id, text, parse_mode='Markdown')
 
 
 # ==================== REPLY KEYBOARD HANDLERS ====================
 @bot.message_handler(func=lambda m: m.text == "📱 Get Number")
 def kb_get_number(message):
     user_id = message.from_user.id
+    upsert_user(user_id, message.from_user.username, message.from_user.first_name)
     if not check_user_joined(user_id):
         send_force_join_message(message.chat.id, message.from_user.first_name or '')
         return
@@ -907,8 +815,10 @@ def kb_withdraw(message):
     if not check_user_joined(user_id):
         send_force_join_message(message.chat.id, message.from_user.first_name or '')
         return
-    bot.send_message(message.chat.id, "💸 *Withdrawal*\n\n_Coming soon — admin will process soon._",
-                     parse_mode='Markdown', reply_markup=back_to_main_btn())
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🔙 Main Menu", callback_data="back_main", style='danger'))
+    bot.send_message(message.chat.id, "💸 *Withdrawal*\n\n_Coming soon - admin will process soon._",
+                     parse_mode='Markdown', reply_markup=markup)
 
 
 @bot.message_handler(func=lambda m: m.text == "💰 Balance")
@@ -917,8 +827,10 @@ def kb_balance(message):
     if not check_user_joined(user_id):
         send_force_join_message(message.chat.id, message.from_user.first_name or '')
         return
-    text = "💰 *Your Balance*\n\n💰 `$0.00`\n\n_Earnings will appear here._"
-    bot.send_message(message.chat.id, text, parse_mode='Markdown', reply_markup=back_to_main_btn())
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🔙 Main Menu", callback_data="back_main", style='danger'))
+    bot.send_message(message.chat.id, "💰 *Your Balance*\n\n💰 `$0.00`\n\n_Earnings will appear here._",
+                     parse_mode='Markdown', reply_markup=markup)
 
 
 @bot.message_handler(func=lambda m: m.text == "💬 Support")
@@ -928,8 +840,10 @@ def kb_support(message):
         send_force_join_message(message.chat.id, message.from_user.first_name or '')
         return
     contact = get_setting('support_contact', '@your_username')
-    text = f"💬 *Support*\n\nContact: {contact}\n\nWe'll help you as soon as possible."
-    bot.send_message(message.chat.id, text, parse_mode='Markdown', reply_markup=back_to_main_btn())
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🔙 Main Menu", callback_data="back_main", style='danger'))
+    bot.send_message(message.chat.id, f"💬 *Support*\n\nContact: {contact}\n\nWe'll help you as soon as possible.",
+                     parse_mode='Markdown', reply_markup=markup)
 
 
 @bot.message_handler(func=lambda m: m.text == "🛠️ Admin Panel")
@@ -938,10 +852,7 @@ def kb_admin(message):
     if not is_admin(user_id):
         bot.send_message(message.chat.id, "⛔ Admins only.")
         return
-    send_admin_panel(message.chat.id)
-
-
-# ==================== INLINE CALLBACK HANDLER ====================
+    send_admin_panel(message.chat.id)# ==================== CALLBACK HANDLER ====================
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
     user_id = call.from_user.id
@@ -949,24 +860,21 @@ def handle_callback(call):
     upsert_user(user_id, call.from_user.username, call.from_user.first_name)
 
     try:
-        # ---- Force join verify ----
         if data == "verify_join":
-            bot.answer_callback_query(call.id)
+            safe_answer(call)
             if check_user_joined(user_id):
                 try:
                     bot.delete_message(call.message.chat.id, call.message.message_id)
                 except:
                     pass
-                bot.send_message(call.message.chat.id, "✅ *Verified!* You can now use the bot.",
-                                 parse_mode='Markdown')
+                bot.send_message(call.message.chat.id, "✅ *Verified!* You can now use the bot.", parse_mode='Markdown')
                 cmd_start(call.message)
             else:
-                bot.answer_callback_query(call.id, "❌ You haven't joined all channels yet!", show_alert=True)
+                safe_answer(call, "❌ You haven't joined all channels yet!", True)
             return
 
-        # ---- Back to main ----
         if data == "back_main":
-            bot.answer_callback_query(call.id)
+            safe_answer(call)
             try:
                 bot.delete_message(call.message.chat.id, call.message.message_id)
             except:
@@ -974,27 +882,23 @@ def handle_callback(call):
             cmd_start(call.message)
             return
 
-        # ---- Get Number flow ----
         if data == "get_number":
-            bot.answer_callback_query(call.id)
+            safe_answer(call)
             markup, text = services_menu()
-            if not markup:
-                try:
+            try:
+                if not markup:
                     bot.edit_message_text(text, call.message.chat.id, call.message.message_id,
                                           parse_mode='Markdown', reply_markup=back_to_main_btn())
-                except:
-                    pass
-            else:
-                try:
+                else:
                     bot.edit_message_text(text, call.message.chat.id, call.message.message_id,
                                           parse_mode='Markdown', reply_markup=markup)
-                except:
-                    bot.send_message(call.message.chat.id, text, parse_mode='Markdown', reply_markup=markup)
+            except:
+                pass
             return
 
         if data.startswith("svc_"):
             service_id = int(data.split("_")[1])
-            bot.answer_callback_query(call.id)
+            safe_answer(call)
             markup, text = countries_menu(service_id)
             try:
                 if not markup:
@@ -1011,10 +915,10 @@ def handle_callback(call):
             country_id = int(data.split("_")[1])
             country = db.query_one("SELECT service_id FROM countries WHERE id=?", [country_id])
             if not country:
-                bot.answer_callback_query(call.id, "❌ Country not found")
+                safe_answer(call, "❌ Country not found")
                 return
-            service_id = country[0]
-            bot.answer_callback_query(call.id, "🌍 Loading numbers...")
+            service_id = int(country[0])
+            safe_answer(call, "Loading numbers...")
             markup, text = numbers_screen(user_id, service_id, country_id)
             try:
                 if markup:
@@ -1026,11 +930,11 @@ def handle_callback(call):
             return
 
         if data.startswith("chgnum_"):
-            _, svc_id, ctry_id = data.split("_")
-            svc_id, ctry_id = int(svc_id), int(ctry_id)
+            parts = data.split("_")
+            svc_id, ctry_id = int(parts[1]), int(parts[2])
             db.execute("UPDATE numbers SET assigned_to=0, assigned_at=NULL WHERE assigned_to=? AND country_id=?",
                        [user_id, ctry_id])
-            bot.answer_callback_query(call.id, "🔄 Getting new numbers...")
+            safe_answer(call, "Getting new numbers...")
             markup, text = numbers_screen(user_id, svc_id, ctry_id)
             try:
                 if markup:
@@ -1041,12 +945,12 @@ def handle_callback(call):
             return
 
         if data.startswith("togglecc_"):
-            _, svc_id, ctry_id = data.split("_")
-            svc_id, ctry_id = int(svc_id), int(ctry_id)
+            parts = data.split("_")
+            svc_id, ctry_id = int(parts[1]), int(parts[2])
             user = get_user(user_id)
             new_val = 0 if user['verified'] else 1
             db.execute("UPDATE users SET verified=? WHERE user_id=?", [new_val, user_id])
-            bot.answer_callback_query(call.id, "✅ Toggled!")
+            safe_answer(call, "Toggled!")
             markup, text = numbers_screen(user_id, svc_id, ctry_id)
             try:
                 if markup:
@@ -1058,86 +962,15 @@ def handle_callback(call):
 
         if data.startswith("copy_"):
             num = data.replace("copy_", "", 1)
-            bot.answer_callback_query(call.id, "📋 Tap to copy", show_alert=False)
+            safe_answer(call)
             bot.send_message(call.message.chat.id, f"📋 Copy this number:\n\n`{num}`", parse_mode='Markdown')
             return
 
-        # ---- Other menu ----
-        if data == "withdraw":
-            bot.answer_callback_query(call.id, "💸 Coming soon")
-            try:
-                bot.edit_message_text("💸 *Withdrawal*\n\n_Coming soon._",
-                                      call.message.chat.id, call.message.message_id,
-                                      parse_mode='Markdown', reply_markup=back_to_main_btn())
-            except:
-                pass
-            return
-
-        if data == "balance":
-            bot.answer_callback_query(call.id)
-            try:
-                bot.edit_message_text("💰 *Your Balance*\n\n💰 `$0.00`",
-                                      call.message.chat.id, call.message.message_id,
-                                      parse_mode='Markdown', reply_markup=back_to_main_btn())
-            except:
-                pass
-            return
-
-        if data == "country_list":
-            bot.answer_callback_query(call.id)
-            rows = db.query("""
-                SELECT c.name, c.code, COUNT(n.id)
-                FROM countries c
-                LEFT JOIN numbers n ON n.country_id = c.id AND n.assigned_to = 0
-                GROUP BY c.id
-                ORDER BY c.name
-            """)
-            text = "🌍 *Available Countries*\n\n"
-            if not rows:
-                text += "_No countries yet._"
-            else:
-                for name, code, count in rows:
-                    text += f"• *{name}* ({code}) — `{int(count)}` in stock\n"
-            try:
-                bot.edit_message_text(text[:4000], call.message.chat.id, call.message.message_id,
-                                      parse_mode='Markdown', reply_markup=back_to_main_btn())
-            except:
-                bot.send_message(call.message.chat.id, text[:4000], parse_mode='Markdown',
-                                 reply_markup=back_to_main_btn())
-            return
-
-        if data == "status":
-            bot.answer_callback_query(call.id)
-            panels = get_all_panels()
-            text = f"📊 *Status*\n\n🎛️ Panels: `{len(panels)}`\n✅ Bot running 24/7"
-            try:
-                bot.edit_message_text(text, call.message.chat.id, call.message.message_id,
-                                      parse_mode='Markdown', reply_markup=back_to_main_btn())
-            except:
-                pass
-            return
-
-        if data == "support":
-            bot.answer_callback_query(call.id)
-            contact = get_setting('support_contact', '@your_username')
-            try:
-                bot.edit_message_text(f"💬 *Support*\n\nContact: {contact}",
-                                      call.message.chat.id, call.message.message_id,
-                                      parse_mode='Markdown', reply_markup=back_to_main_btn())
-            except:
-                pass
-            return
-
-        # ---- Admin Panel ----
         if data == "admin_panel":
             if not is_admin(user_id):
-                bot.answer_callback_query(call.id, "⛔ Admins only")
+                safe_answer(call, "⛔ Admins only")
                 return
-            bot.answer_callback_query(call.id)
-            try:
-                bot.delete_message(call.message.chat.id, call.message.message_id)
-            except:
-                pass
+            safe_answer(call)
             send_admin_panel(call.message.chat.id)
             return
 
@@ -1148,68 +981,73 @@ def handle_callback(call):
     except Exception as e:
         print(f"Callback error: {e}")
         traceback.print_exc()
-        try:
-            bot.answer_callback_query(call.id, "⚠️ Error, try again")
-        except:
-            pass
+        safe_answer(call, "⚠️ Error, try again")
+
 
 # ==================== ADMIN PANEL ====================
 def send_admin_panel(chat_id):
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
-        types.InlineKeyboardButton("🎛️ Panels", callback_data="adm_panels"),
-        types.InlineKeyboardButton("➕ Upload Numbers", callback_data="adm_upload")
+        types.InlineKeyboardButton("🎛️ Panels", callback_data="adm_panels", style='primary'),
+        types.InlineKeyboardButton("➕ Upload Numbers", callback_data="adm_upload", style='success')
     )
     markup.add(
-        types.InlineKeyboardButton("🗑️ Delete Numbers", callback_data="adm_delete"),
-        types.InlineKeyboardButton("📊 Stock Overview", callback_data="adm_stock")
+        types.InlineKeyboardButton("🗑️ Delete Numbers", callback_data="adm_delete", style='danger'),
+        types.InlineKeyboardButton("📊 Stock Overview", callback_data="adm_stock", style='primary')
     )
     markup.add(
-        types.InlineKeyboardButton("📢 OTP Groups", callback_data="adm_otp_groups"),
-        types.InlineKeyboardButton("📁 Upload Files", callback_data="adm_upload_files")
+        types.InlineKeyboardButton("📢 OTP Groups", callback_data="adm_otp_groups", style='primary'),
+        types.InlineKeyboardButton("📁 Upload Files", callback_data="adm_upload_files", style='primary')
     )
     markup.add(
-        types.InlineKeyboardButton("👥 Users", callback_data="adm_users"),
-        types.InlineKeyboardButton("📊 Stats", callback_data="adm_stats")
+        types.InlineKeyboardButton("👥 Users", callback_data="adm_users", style='success'),
+        types.InlineKeyboardButton("📊 Stats", callback_data="adm_stats", style='success')
     )
     markup.add(
-        types.InlineKeyboardButton("📢 Broadcast", callback_data="adm_broadcast"),
-        types.InlineKeyboardButton("📣 Announcement", callback_data="adm_announce")
+        types.InlineKeyboardButton("📢 Broadcast", callback_data="adm_broadcast", style='success'),
+        types.InlineKeyboardButton("📣 Announcement", callback_data="adm_announce", style='success')
     )
     markup.add(
-        types.InlineKeyboardButton("💰 Balance", callback_data="adm_balance"),
-        types.InlineKeyboardButton("💳 Withdrawals", callback_data="adm_withdrawals")
+        types.InlineKeyboardButton("💰 Balance", callback_data="adm_balance", style='primary'),
+        types.InlineKeyboardButton("💳 Withdrawals", callback_data="adm_withdrawals", style='primary')
     )
     markup.add(
-        types.InlineKeyboardButton("💬 Support", callback_data="adm_support"),
-        types.InlineKeyboardButton("👑 Admins", callback_data="adm_admins")
+        types.InlineKeyboardButton("💬 Support", callback_data="adm_support", style='primary'),
+        types.InlineKeyboardButton("👑 Admins", callback_data="adm_admins", style='success')
     )
     markup.add(
-        types.InlineKeyboardButton("⚙️ Settings", callback_data="adm_settings"),
-        types.InlineKeyboardButton("📄 Logs", callback_data="adm_logs")
+        types.InlineKeyboardButton("⚙️ Settings", callback_data="adm_settings", style='primary'),
+        types.InlineKeyboardButton("📄 Logs", callback_data="adm_logs", style='primary')
     )
     markup.add(
-        types.InlineKeyboardButton("💾 Backup", callback_data="adm_backup"),
-        types.InlineKeyboardButton("📥 Restore", callback_data="adm_restore")
+        types.InlineKeyboardButton("💾 Backup", callback_data="adm_backup", style='primary'),
+        types.InlineKeyboardButton("📥 Restore", callback_data="adm_restore", style='primary')
     )
-    markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_back"))
+    markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_back", style='danger'))
     bot.send_message(chat_id, "🛠️ *Admin Panel*\n\nPick an option:",
                      parse_mode='Markdown', reply_markup=markup)
 
 
+def safe_answer(call, text='', show_alert=False):
+    try:
+        bot.answer_callback_query(call.id, text=text, show_alert=show_alert)
+    except:
+        pass
+
+
+# ==================== ADMIN CALLBACKS ====================
 def handle_admin_callback(call):
     user_id = call.from_user.id
     if not is_admin(user_id):
-        bot.answer_callback_query(call.id, "⛔ Admins only")
+        safe_answer(call, "⛔ Admins only")
         return
 
     data = call.data
     chat_id = call.message.chat.id
     msg_id = call.message.message_id
 
-    # ---- BACK ----
     if data == "adm_back":
-        bot.answer_callback_query(call.id)
+        safe_answer(call)
         try:
             bot.delete_message(chat_id, msg_id)
         except:
@@ -1217,27 +1055,26 @@ def handle_admin_callback(call):
         send_admin_panel(chat_id)
         return
 
-    # ---- PANELS ----
     if data == "adm_panels":
-        bot.answer_callback_query(call.id)
+        safe_answer(call)
         panels = db.query("SELECT id, name, base_url, active FROM panels ORDER BY id")
         text = "🎛️ *Panels*\n\n"
         if not panels:
             text += "_No panels added yet._"
         else:
             for p in panels:
-                status = "🟢" if p[3] else "🔴"
+                status = "🟢" if p[3] and int(p[3]) == 1 else "🔴"
                 text += f"{status} *{p[1]}*\n   URL: `{p[2]}`\n\n"
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(
-            types.InlineKeyboardButton("➕ Add Panel", callback_data="adm_add_panel"),
-            types.InlineKeyboardButton("✏️ Edit Panel", callback_data="adm_edit_panel")
+            types.InlineKeyboardButton("➕ Add Panel", callback_data="adm_add_panel", style='success'),
+            types.InlineKeyboardButton("✏️ Edit Panel", callback_data="adm_edit_panel", style='primary')
         )
         markup.add(
-            types.InlineKeyboardButton("🗑️ Delete Panel", callback_data="adm_del_panel"),
-            types.InlineKeyboardButton("🔄 Toggle Active", callback_data="adm_toggle_panel")
+            types.InlineKeyboardButton("🗑️ Delete Panel", callback_data="adm_del_panel", style='danger'),
+            types.InlineKeyboardButton("🔄 Toggle Active", callback_data="adm_toggle_panel", style='primary')
         )
-        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_back"))
+        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_back", style='danger'))
         try:
             bot.edit_message_text(text[:4000], chat_id, msg_id, parse_mode='Markdown', reply_markup=markup)
         except:
@@ -1245,26 +1082,24 @@ def handle_admin_callback(call):
         return
 
     if data == "adm_add_panel":
-        bot.answer_callback_query(call.id)
+        safe_answer(call)
         msg = bot.send_message(chat_id,
-                               "🎛️ *Add Panel*\n\n"
-                               "Send in this format (each on separate line):\n\n"
-                               "```\nPanel Name\nhttp://panel-url.com/ints\nusername\npassword\n```",
+                               "🎛️ *Add Panel*\n\nSend in this format (4 lines):\n\n```\nPanel Name\nhttp://panel-url.com/ints\nusername\npassword\n```",
                                parse_mode='Markdown',
                                reply_markup=types.ForceReply(selective=True))
         bot.register_next_step_handler(msg, admin_save_panel)
         return
 
     if data == "adm_edit_panel":
-        bot.answer_callback_query(call.id)
+        safe_answer(call)
         panels = db.query("SELECT id, name FROM panels ORDER BY id")
         if not panels:
             bot.send_message(chat_id, "❌ No panels to edit.")
             return
         markup = types.InlineKeyboardMarkup(row_width=1)
         for p in panels:
-            markup.add(types.InlineKeyboardButton(f"✏️ {p[1]}", callback_data=f"adm_editp_{p[0]}"))
-        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_panels"))
+            markup.add(types.InlineKeyboardButton(f"✏️ {p[1]}", callback_data=f"adm_editp_{p[0]}", style='primary'))
+        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_panels", style='danger'))
         try:
             bot.edit_message_text("✏️ Pick a panel to edit:", chat_id, msg_id,
                                   parse_mode='Markdown', reply_markup=markup)
@@ -1274,66 +1109,60 @@ def handle_admin_callback(call):
 
     if data.startswith("adm_editp_"):
         pid = int(data.split("_")[2])
-        bot.answer_callback_query(call.id)
+        safe_answer(call)
         panel = db.query_one("SELECT name, base_url, username, password FROM panels WHERE id=?", [pid])
         if not panel:
             bot.send_message(chat_id, "❌ Panel not found")
             return
         msg = bot.send_message(chat_id,
-                               f"✏️ *Edit Panel #{pid}*\n\n"
-                               f"Current:\n"
-                               f"Name: `{panel[0]}`\n"
-                               f"URL: `{panel[1]}`\n"
-                               f"User: `{panel[2]}`\n\n"
-                               f"Send new values (4 lines):\n"
-                               f"Name\\nURL\\nUser\\nPass",
+                               f"✏️ *Edit Panel #{pid}*\n\nCurrent:\nName: `{panel[0]}`\nURL: `{panel[1]}`\nUser: `{panel[2]}`\n\nSend new values (4 lines): Name\\nURL\\nUser\\nPass",
                                parse_mode='Markdown',
                                reply_markup=types.ForceReply(selective=True))
         bot.register_next_step_handler(msg, admin_update_panel, pid)
         return
 
     if data == "adm_del_panel":
-        bot.answer_callback_query(call.id)
+        safe_answer(call)
         panels = db.query("SELECT id, name FROM panels ORDER BY id")
         if not panels:
             bot.send_message(chat_id, "❌ No panels to delete.")
             return
         markup = types.InlineKeyboardMarkup(row_width=1)
         for p in panels:
-            markup.add(types.InlineKeyboardButton(f"🗑️ {p[1]}", callback_data=f"adm_delp_{p[0]}"))
-        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_panels"))
+            markup.add(types.InlineKeyboardButton(f"🗑️ {p[1]}", callback_data=f"adm_delp_{p[0]}", style='danger'))
+        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_panels", style='danger'))
         try:
-            bot.edit_message_text("🗑️ Pick a panel to DELETE (removes all its services/numbers):",
-                                  chat_id, msg_id, parse_mode='Markdown', reply_markup=markup)
+            bot.edit_message_text("🗑️ Pick a panel to DELETE:", chat_id, msg_id,
+                                  parse_mode='Markdown', reply_markup=markup)
         except:
             pass
         return
 
     if data.startswith("adm_delp_"):
         pid = int(data.split("_")[2])
-        bot.answer_callback_query(call.id, "🗑️ Deleting...")
+        safe_answer(call, "Deleting...")
         services = db.query("SELECT id FROM services WHERE panel_id=?", [pid])
         for s in services:
             db.execute("DELETE FROM numbers WHERE country_id IN (SELECT id FROM countries WHERE service_id=?)", [s[0]])
             db.execute("DELETE FROM countries WHERE service_id=?", [s[0]])
         db.execute("DELETE FROM services WHERE panel_id=?", [pid])
         db.execute("DELETE FROM panels WHERE id=?", [pid])
-        bot.send_message(chat_id, f"✅ Panel #{pid} and all its services/numbers deleted.")
+        bot.send_message(chat_id, f"✅ Panel #{pid} deleted.")
         log_event('admin_delete_panel', f"panel {pid} by {user_id}")
         send_admin_panel(chat_id)
         return
 
     if data == "adm_toggle_panel":
-        bot.answer_callback_query(call.id)
+        safe_answer(call)
         panels = db.query("SELECT id, name, active FROM panels ORDER BY id")
         if not panels:
             bot.send_message(chat_id, "❌ No panels.")
             return
         markup = types.InlineKeyboardMarkup(row_width=1)
         for p in panels:
-            icon = "🟢" if p[2] else "🔴"
-            markup.add(types.InlineKeyboardButton(f"{icon} {p[1]}", callback_data=f"adm_togp_{p[0]}"))
-        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_panels"))
+            icon = "🟢" if p[2] and int(p[2]) == 1 else "🔴"
+            markup.add(types.InlineKeyboardButton(f"{icon} {p[1]}", callback_data=f"adm_togp_{p[0]}", style='primary'))
+        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_panels", style='danger'))
         try:
             bot.edit_message_text("🔄 Toggle panel active:", chat_id, msg_id,
                                   parse_mode='Markdown', reply_markup=markup)
@@ -1344,24 +1173,23 @@ def handle_admin_callback(call):
     if data.startswith("adm_togp_"):
         pid = int(data.split("_")[2])
         row = db.query_one("SELECT active FROM panels WHERE id=?", [pid])
-        new_val = 0 if (row and row[0]) else 1
+        new_val = 0 if (row and row[0] and int(row[0]) == 1) else 1
         db.execute("UPDATE panels SET active=? WHERE id=?", [new_val, pid])
-        bot.answer_callback_query(call.id, "✅ Toggled")
+        safe_answer(call, "✅ Toggled")
         log_event('admin_toggle_panel', f"panel {pid} active={new_val}")
         send_admin_panel(chat_id)
         return
 
-    # ---- UPLOAD NUMBERS WIZARD ----
     if data == "adm_upload":
-        bot.answer_callback_query(call.id)
+        safe_answer(call)
         panels = db.query("SELECT id, name FROM panels WHERE active=1 ORDER BY name")
         if not panels:
             bot.send_message(chat_id, "❌ Add a panel first (🎛️ Panels).")
             return
         markup = types.InlineKeyboardMarkup(row_width=1)
         for p in panels:
-            markup.add(types.InlineKeyboardButton(f"🎛️ {p[1]}", callback_data=f"adm_up_panel_{p[0]}"))
-        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_back"))
+            markup.add(types.InlineKeyboardButton(f"🎛️ {p[1]}", callback_data=f"adm_up_panel_{p[0]}", style='success'))
+        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_back", style='danger'))
         try:
             bot.edit_message_text("➕ *Upload Numbers*\n\nStep 1: Pick a panel:",
                                   chat_id, msg_id, parse_mode='Markdown', reply_markup=markup)
@@ -1371,38 +1199,24 @@ def handle_admin_callback(call):
 
     if data.startswith("adm_up_panel_"):
         pid = int(data.split("_")[3])
-        bot.answer_callback_query(call.id)
+        safe_answer(call)
         msg = bot.send_message(chat_id,
-                               "➕ *Upload Numbers — Step 2/5*\n\n"
-                               "Send the *Service name*:\n\n"
-                               "Example: `WhatsApp`",
+                               "➕ *Upload Numbers - Step 2/5*\n\nSend the *Service name*:\n\nExample: `WhatsApp`",
                                parse_mode='Markdown',
                                reply_markup=types.ForceReply(selective=True))
         bot.register_next_step_handler(msg, wizard_service, pid)
         return
 
-    # ---- DELETE NUMBERS ----
     if data == "adm_delete":
-        bot.answer_callback_query(call.id)
-        services = db.query("""
-            SELECT s.id, s.name, p.name, COUNT(n.id)
-            FROM services s
-            LEFT JOIN panels p ON s.panel_id = p.id
-            LEFT JOIN countries c ON c.service_id = s.id
-            LEFT JOIN numbers n ON n.country_id = c.id
-            GROUP BY s.id
-            ORDER BY s.name
-        """)
+        safe_answer(call)
+        services = db.query("SELECT s.id, s.name, COUNT(n.id) FROM services s LEFT JOIN countries c ON c.service_id = s.id LEFT JOIN numbers n ON n.country_id = c.id GROUP BY s.id ORDER BY s.name")
         if not services:
             bot.send_message(chat_id, "❌ No services to delete.")
             return
         markup = types.InlineKeyboardMarkup(row_width=1)
         for s in services:
-            markup.add(types.InlineKeyboardButton(
-                f"🗑️ {s[1]} — {s[3]} numbers",
-                callback_data=f"adm_delsvc_{s[0]}"
-            ))
-        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_back"))
+            markup.add(types.InlineKeyboardButton(f"🗑️ {s[1]} - {s[2]} numbers", callback_data=f"adm_delsvc_{s[0]}", style='danger'))
+        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_back", style='danger'))
         try:
             bot.edit_message_text("🗑️ *Delete Number Files*\n\nPick a service to delete:",
                                   chat_id, msg_id, parse_mode='Markdown', reply_markup=markup)
@@ -1412,24 +1226,20 @@ def handle_admin_callback(call):
 
     if data.startswith("adm_delsvc_"):
         sid = int(data.split("_")[2])
-        bot.answer_callback_query(call.id)
+        safe_answer(call)
         svc = db.query_one("SELECT name FROM services WHERE id=?", [sid])
         countries = db.query("SELECT id, name, code FROM countries WHERE service_id=?", [sid])
         if not countries:
             db.execute("DELETE FROM services WHERE id=?", [sid])
-            bot.send_message(chat_id, f"✅ Service `{svc[0] if svc else sid}` deleted (had no countries).",
-                             parse_mode='Markdown')
+            bot.send_message(chat_id, f"✅ Service deleted.")
             send_admin_panel(chat_id)
             return
         markup = types.InlineKeyboardMarkup(row_width=1)
         for c in countries:
             count = db.query_one("SELECT COUNT(*) FROM numbers WHERE country_id=?", [c[0]])
             cnt = int(count[0]) if count else 0
-            markup.add(types.InlineKeyboardButton(
-                f"🗑️ {c[1]} ({c[2]}) — {cnt} numbers",
-                callback_data=f"adm_delctry_{c[0]}"
-            ))
-        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_delete"))
+            markup.add(types.InlineKeyboardButton(f"🗑️ {c[1]} ({c[2]}) - {cnt} nums", callback_data=f"adm_delctry_{c[0]}", style='danger'))
+        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_delete", style='danger'))
         try:
             bot.edit_message_text(f"🗑️ *{svc[0] if svc else sid}*\n\nPick country to delete:",
                                   chat_id, msg_id, parse_mode='Markdown', reply_markup=markup)
@@ -1439,66 +1249,51 @@ def handle_admin_callback(call):
 
     if data.startswith("adm_delctry_"):
         cid = int(data.split("_")[2])
-        bot.answer_callback_query(call.id, "🗑️ Deleting...")
+        safe_answer(call, "Deleting...")
         db.execute("DELETE FROM numbers WHERE country_id=?", [cid])
         db.execute("DELETE FROM countries WHERE id=?", [cid])
-        bot.send_message(chat_id, f"✅ Country file deleted (all its numbers removed).")
+        bot.send_message(chat_id, "✅ Country file deleted.")
         log_event('admin_delete_numbers', f"country {cid} by {user_id}")
         send_admin_panel(chat_id)
         return
 
-    # ---- STOCK OVERVIEW ----
     if data == "adm_stock":
-        bot.answer_callback_query(call.id)
-        rows = db.query("""
-            SELECT p.name, s.name, c.name, c.code,
-                (SELECT COUNT(*) FROM numbers WHERE country_id=c.id AND assigned_to=0) as avail,
-                (SELECT COUNT(*) FROM numbers WHERE country_id=c.id AND assigned_to!=0) as assigned
-            FROM countries c
-            JOIN services s ON c.service_id = s.id
-            LEFT JOIN panels p ON s.panel_id = p.id
-            ORDER BY p.name, s.name, c.name
-        """)
+        safe_answer(call)
+        rows = db.query("SELECT p.name, s.name, c.name, c.code, (SELECT COUNT(*) FROM numbers WHERE country_id=c.id AND assigned_to=0) as avail, (SELECT COUNT(*) FROM numbers WHERE country_id=c.id AND assigned_to!=0) as assigned FROM countries c JOIN services s ON c.service_id = s.id LEFT JOIN panels p ON s.panel_id = p.id ORDER BY p.name, s.name, c.name")
         if not rows:
             bot.send_message(chat_id, "📊 No number files yet.")
             return
         text = "📊 *Stock Overview*\n\n"
         for pname, sname, cname, ccode, avail, assigned in rows:
-            text += f"🎛️ *{pname or '?'}* → ⚙️ *{sname}*\n"
-            text += f"   🌍 *{cname}* ({ccode})\n"
-            text += f"   📦 `{int(avail)}` available | 🔒 `{int(assigned)}` assigned\n\n"
+            text += f"🎛️ *{pname or '?'}* → ⚙️ *{sname}*\n   🌍 *{cname}* ({ccode})\n   📦 `{int(avail)}` avail | 🔒 `{int(assigned)}` assigned\n\n"
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_back"))
+        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_back", style='danger'))
         try:
             bot.edit_message_text(text[:4000], chat_id, msg_id, parse_mode='Markdown', reply_markup=markup)
         except:
             bot.send_message(chat_id, text[:4000], parse_mode='Markdown', reply_markup=markup)
         return
 
-    # ---- OTP GROUPS ----
     if data == "adm_otp_groups":
-        bot.answer_callback_query(call.id)
+        safe_answer(call)
         current = get_setting('otp_link', 'https://t.me/alohaotp')
         force_on = get_setting('force_join_enabled', '0') == '1'
         channels = get_force_join_channels()
-        text = f"📢 *OTP Groups*\n\n"
-        text += f"🔗 Main OTP Link: `{current}`\n\n"
-        text += f"🔒 Force-Join: {'🟢 ON' if force_on else '🔴 OFF'}\n\n"
-        text += f"*Required Channels ({len(channels)}):*\n"
+        text = f"📢 *OTP Groups*\n\n🔗 Main OTP Link: `{current}`\n\n🔒 Force-Join: {'🟢 ON' if force_on else '🔴 OFF'}\n\n*Required Channels ({len(channels)}):*\n"
         for ch in channels:
             text += f"  • {ch[2] or 'Channel'}\n"
         if not channels:
             text += "  _None_\n"
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(
-            types.InlineKeyboardButton("🔗 Set OTP Link", callback_data="adm_set_otp"),
-            types.InlineKeyboardButton("🔄 Toggle Force-Join", callback_data="adm_toggle_force")
+            types.InlineKeyboardButton("🔗 Set OTP Link", callback_data="adm_set_otp", style='primary'),
+            types.InlineKeyboardButton("🔄 Toggle Force", callback_data="adm_toggle_force", style='primary')
         )
         markup.add(
-            types.InlineKeyboardButton("➕ Add Channel", callback_data="adm_add_channel"),
-            types.InlineKeyboardButton("🗑️ Remove Channel", callback_data="adm_rem_channel")
+            types.InlineKeyboardButton("➕ Add Channel", callback_data="adm_add_channel", style='success'),
+            types.InlineKeyboardButton("🗑️ Remove Channel", callback_data="adm_rem_channel", style='danger')
         )
-        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_back"))
+        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_back", style='danger'))
         try:
             bot.edit_message_text(text[:4000], chat_id, msg_id, parse_mode='Markdown', reply_markup=markup)
         except:
@@ -1506,9 +1301,8 @@ def handle_admin_callback(call):
         return
 
     if data == "adm_set_otp":
-        bot.answer_callback_query(call.id)
-        msg = bot.send_message(chat_id,
-                               "🔗 Send the new OTP group link (must start with https://t.me/):",
+        safe_answer(call)
+        msg = bot.send_message(chat_id, "🔗 Send new OTP link (https://t.me/...):",
                                reply_markup=types.ForceReply(selective=True))
         bot.register_next_step_handler(msg, admin_save_otp_link)
         return
@@ -1517,37 +1311,29 @@ def handle_admin_callback(call):
         current = get_setting('force_join_enabled', '0')
         new_val = '0' if current == '1' else '1'
         set_setting('force_join_enabled', new_val)
-        bot.answer_callback_query(call.id, f"✅ Force-join: {'ON' if new_val == '1' else 'OFF'}")
+        safe_answer(call, f"Force-join: {'ON' if new_val == '1' else 'OFF'}")
         send_admin_panel(chat_id)
         return
 
     if data == "adm_add_channel":
-        bot.answer_callback_query(call.id)
-        msg = bot.send_message(chat_id,
-                               "➕ *Add Force-Join Channel*\n\n"
-                               "Send in this format:\n\n"
-                               "`@channelusername | Channel Name | https://t.me/invite`\n\n"
-                               "Or for private channels:\n"
-                               "`-1001234567890 | Channel Name | https://t.me/+xxxx`",
-                               parse_mode='Markdown',
-                               reply_markup=types.ForceReply(selective=True))
+        safe_answer(call)
+        msg = bot.send_message(chat_id, "➕ Send: `chat_id | Name | invite_link`\n\nEx: `@mychannel | My Channel | https://t.me/mychannel`",
+                               parse_mode='Markdown', reply_markup=types.ForceReply(selective=True))
         bot.register_next_step_handler(msg, admin_save_channel)
         return
 
     if data == "adm_rem_channel":
-        bot.answer_callback_query(call.id)
+        safe_answer(call)
         channels = get_force_join_channels()
         if not channels:
-            bot.send_message(chat_id, "❌ No channels to remove.")
+            bot.send_message(chat_id, "❌ No channels.")
             return
         markup = types.InlineKeyboardMarkup(row_width=1)
         for ch in channels:
-            markup.add(types.InlineKeyboardButton(f"🗑️ {ch[2] or 'Channel'}",
-                                                  callback_data=f"adm_remch_{ch[0]}"))
-        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_otp_groups"))
+            markup.add(types.InlineKeyboardButton(f"🗑️ {ch[2] or 'Channel'}", callback_data=f"adm_remch_{ch[0]}", style='danger'))
+        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_otp_groups", style='danger'))
         try:
-            bot.edit_message_text("🗑️ Pick channel to remove:", chat_id, msg_id,
-                                  parse_mode='Markdown', reply_markup=markup)
+            bot.edit_message_text("🗑️ Pick channel to remove:", chat_id, msg_id, parse_mode='Markdown', reply_markup=markup)
         except:
             pass
         return
@@ -1555,89 +1341,65 @@ def handle_admin_callback(call):
     if data.startswith("adm_remch_"):
         cid = int(data.split("_")[2])
         db.execute("DELETE FROM force_join WHERE id=?", [cid])
-        bot.answer_callback_query(call.id, "✅ Removed")
+        safe_answer(call, "✅ Removed")
         send_admin_panel(chat_id)
         return
 
-    # ---- UPLOAD FILES (alias to upload wizard) ----
     if data == "adm_upload_files":
-        bot.answer_callback_query(call.id, "Use ➕ Upload Numbers")
+        safe_answer(call, "Use ➕ Upload Numbers")
         return
 
-    # ---- USERS ----
     if data == "adm_users":
-        bot.answer_callback_query(call.id)
+        safe_answer(call)
         total = db.query_one("SELECT COUNT(*) FROM users")
-        users = db.query("""
-            SELECT user_id, username, first_name, otp_count, first_seen
-            FROM users
-            ORDER BY otp_count DESC
-            LIMIT 50
-        """)
-        text = f"👥 *Users* — Total: `{int(total[0]) if total else 0}`\n\n"
+        users = db.query("SELECT user_id, username, first_name, otp_count FROM users ORDER BY otp_count DESC LIMIT 50")
+        text = f"👥 *Users* - Total: `{int(total[0]) if total else 0}`\n\n"
         for u in users:
             uname = f"@{u[1]}" if u[1] else (u[2] or 'Unknown')
-            text += f"• `{u[0]}` — {uname} — OTPs: `{int(u[3]) if u[3] else 0}`\n"
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(types.InlineKeyboardButton("🔍 Search User", callback_data="adm_search_user"))
-        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_back"))
+            text += f"• `{u[0]}` - {uname} - OTPs: `{int(u[3]) if u[3] else 0}`\n"
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_back", style='danger'))
         try:
             bot.edit_message_text(text[:4000], chat_id, msg_id, parse_mode='Markdown', reply_markup=markup)
         except:
             bot.send_message(chat_id, text[:4000], parse_mode='Markdown', reply_markup=markup)
         return
 
-    if data == "adm_search_user":
-        bot.answer_callback_query(call.id)
-        msg = bot.send_message(chat_id, "🔍 Send Telegram user ID to search:",
-                               reply_markup=types.ForceReply(selective=True))
-        bot.register_next_step_handler(msg, admin_search_user)
-        return
-
-    # ---- STATS ----
     if data == "adm_stats":
-        bot.answer_callback_query(call.id)
+        safe_answer(call)
         total_otp = db.query_one("SELECT SUM(otp_count) FROM users")
         total_users = db.query_one("SELECT COUNT(*) FROM users")
         total_numbers = db.query_one("SELECT COUNT(*) FROM numbers")
         assigned = db.query_one("SELECT COUNT(*) FROM numbers WHERE assigned_to!=0")
         top = db.query("SELECT user_id, username, first_name, otp_count FROM users ORDER BY otp_count DESC LIMIT 10")
-        text = f"📊 *Stats*\n\n"
-        text += f"📬 Total OTPs: `{int(total_otp[0]) if total_otp and total_otp[0] else 0}`\n"
-        text += f"👥 Total Users: `{int(total_users[0]) if total_users else 0}`\n"
-        text += f"📞 Numbers: `{int(total_numbers[0]) if total_numbers else 0}`\n"
-        text += f"🔒 Assigned: `{int(assigned[0]) if assigned else 0}`\n\n"
-        text += "🏆 *Top 10 Users:*\n\n"
+        text = f"📊 *Stats*\n\n📬 Total OTPs: `{int(total_otp[0]) if total_otp and total_otp[0] else 0}`\n👥 Total Users: `{int(total_users[0]) if total_users else 0}`\n📞 Numbers: `{int(total_numbers[0]) if total_numbers else 0}`\n🔒 Assigned: `{int(assigned[0]) if assigned else 0}`\n\n🏆 *Top 10 Users:*\n\n"
         for i, u in enumerate(top, 1):
             uname = f"@{u[1]}" if u[1] else (u[2] or 'Unknown')
-            text += f"{i}. {uname} — `{int(u[3]) if u[3] else 0}` OTPs\n"
+            text += f"{i}. {uname} - `{int(u[3]) if u[3] else 0}` OTPs\n"
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_back"))
+        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_back", style='danger'))
         try:
             bot.edit_message_text(text[:4000], chat_id, msg_id, parse_mode='Markdown', reply_markup=markup)
         except:
             bot.send_message(chat_id, text[:4000], parse_mode='Markdown', reply_markup=markup)
         return
 
-    # ---- BROADCAST ----
     if data == "adm_broadcast":
-        bot.answer_callback_query(call.id)
-        msg = bot.send_message(chat_id, "📢 Send the message to broadcast to all users:",
+        safe_answer(call)
+        msg = bot.send_message(chat_id, "📢 Send message to broadcast:",
                                reply_markup=types.ForceReply(selective=True))
         bot.register_next_step_handler(msg, admin_send_broadcast)
         return
 
-    # ---- ANNOUNCEMENT ----
     if data == "adm_announce":
-        bot.answer_callback_query(call.id)
+        safe_answer(call)
         msg = bot.send_message(chat_id, "📣 Send announcement text:",
                                reply_markup=types.ForceReply(selective=True))
         bot.register_next_step_handler(msg, admin_send_announcement)
         return
 
-    # ---- BALANCE ----
     if data == "adm_balance":
-        bot.answer_callback_query(call.id, "💰 Loading...")
+        safe_answer(call, "Loading...")
         panels = get_all_panels()
         text = "💰 *Panels Balance*\n\n"
         if not panels:
@@ -1646,69 +1408,36 @@ def handle_admin_callback(call):
             bal = p.get_balance() if p.is_logged_in else "N/A"
             text += f"🎛️ *{p.name}*: `{bal or 'N/A'}`\n"
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_back"))
+        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_back", style='danger'))
         try:
             bot.edit_message_text(text[:4000], chat_id, msg_id, parse_mode='Markdown', reply_markup=markup)
         except:
             bot.send_message(chat_id, text[:4000], parse_mode='Markdown', reply_markup=markup)
         return
 
-    # ---- WITHDRAWALS ----
     if data == "adm_withdrawals":
-        bot.answer_callback_query(call.id)
-        rows = db.query("""
-            SELECT id, user_id, amount, method, details, status, requested_at
-            FROM withdrawals WHERE status='pending'
-            ORDER BY requested_at DESC LIMIT 20
-        """)
-        text = "💳 *Pending Withdrawals*\n\n"
-        if not rows:
-            text += "_No pending requests._"
-        for w in rows:
-            text += f"#{w[0]} — User `{w[1]}`\n"
-            text += f"💰 ${w[2]} via {w[3]}\n"
-            text += f"📝 {w[4]}\n"
-            text += f"🕐 {w[6]}\n\n"
-        markup = types.InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            types.InlineKeyboardButton("✅ Approve", callback_data="adm_wd_approve"),
-            types.InlineKeyboardButton("❌ Reject", callback_data="adm_wd_reject")
-        )
-        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_back"))
-        try:
-            bot.edit_message_text(text[:4000], chat_id, msg_id, parse_mode='Markdown', reply_markup=markup)
-        except:
-            bot.send_message(chat_id, text[:4000], parse_mode='Markdown', reply_markup=markup)
+        safe_answer(call, "Coming soon")
         return
 
-    if data in ["adm_wd_approve", "adm_wd_reject"]:
-        bot.answer_callback_query(call.id, "Coming soon — approve manually for now")
-        return
-
-    # ---- SUPPORT ----
     if data == "adm_support":
-        bot.answer_callback_query(call.id)
-        msg = bot.send_message(chat_id,
-                               f"💬 Current support: `{get_setting('support_contact', '@your_username')}`\n\n"
-                               f"Send new support contact:",
-                               parse_mode='Markdown',
-                               reply_markup=types.ForceReply(selective=True))
+        safe_answer(call)
+        msg = bot.send_message(chat_id, f"💬 Current: `{get_setting('support_contact', '@your_username')}`\n\nSend new support contact:",
+                               parse_mode='Markdown', reply_markup=types.ForceReply(selective=True))
         bot.register_next_step_handler(msg, admin_save_support)
         return
 
-    # ---- ADMINS ----
     if data == "adm_admins":
-        bot.answer_callback_query(call.id)
+        safe_answer(call)
         admins = get_all_admins()
         text = "👑 *Admins*\n\n"
         for a in admins:
             tag = " _(super)_" if a == SUPER_ADMIN else ""
             text += f"• `{a}`{tag}\n"
         markup = types.InlineKeyboardMarkup(row_width=2)
-        markup.add(types.InlineKeyboardButton("➕ Add", callback_data="adm_add_admin"))
+        markup.add(types.InlineKeyboardButton("➕ Add", callback_data="adm_add_admin", style='success'))
         if user_id == SUPER_ADMIN:
-            markup.add(types.InlineKeyboardButton("➖ Remove", callback_data="adm_rem_admin"))
-        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_back"))
+            markup.add(types.InlineKeyboardButton("➖ Remove", callback_data="adm_rem_admin", style='danger'))
+        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_back", style='danger'))
         try:
             bot.edit_message_text(text, chat_id, msg_id, parse_mode='Markdown', reply_markup=markup)
         except:
@@ -1716,7 +1445,7 @@ def handle_admin_callback(call):
         return
 
     if data == "adm_add_admin":
-        bot.answer_callback_query(call.id)
+        safe_answer(call)
         msg = bot.send_message(chat_id, "👑 Send user ID to add as admin:",
                                reply_markup=types.ForceReply(selective=True))
         bot.register_next_step_handler(msg, admin_save_admin)
@@ -1724,20 +1453,19 @@ def handle_admin_callback(call):
 
     if data == "adm_rem_admin":
         if user_id != SUPER_ADMIN:
-            bot.answer_callback_query(call.id, "⛔ Super admin only")
+            safe_answer(call, "⛔ Super admin only")
             return
-        bot.answer_callback_query(call.id)
+        safe_answer(call)
         rows = db.query("SELECT user_id FROM admins")
         if not rows:
             bot.send_message(chat_id, "No additional admins.")
             return
         markup = types.InlineKeyboardMarkup(row_width=1)
         for r in rows:
-            markup.add(types.InlineKeyboardButton(f"❌ {r[0]}", callback_data=f"adm_rema_{r[0]}"))
-        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_admins"))
+            markup.add(types.InlineKeyboardButton(f"❌ {r[0]}", callback_data=f"adm_rema_{r[0]}", style='danger'))
+        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_admins", style='danger'))
         try:
-            bot.edit_message_text("Pick admin to remove:", chat_id, msg_id,
-                                  parse_mode='Markdown', reply_markup=markup)
+            bot.edit_message_text("Pick admin to remove:", chat_id, msg_id, parse_mode='Markdown', reply_markup=markup)
         except:
             pass
         return
@@ -1745,28 +1473,20 @@ def handle_admin_callback(call):
     if data.startswith("adm_rema_"):
         rid = int(data.split("_")[2])
         if user_id != SUPER_ADMIN:
-            bot.answer_callback_query(call.id, "⛔")
+            safe_answer(call, "⛔")
             return
         db.execute("DELETE FROM admins WHERE user_id=?", [rid])
-        bot.answer_callback_query(call.id, f"✅ Removed {rid}")
+        safe_answer(call, f"✅ Removed {rid}")
         send_admin_panel(chat_id)
         return
 
-    # ---- SETTINGS ----
     if data == "adm_settings":
-        bot.answer_callback_query(call.id)
-        npu = get_setting('numbers_per_user', '3')
-        text = f"⚙️ *Settings*\n\n"
-        text += f"📞 Default numbers/user: `{npu}`\n"
-        text += f"💬 Support: `{get_setting('support_contact')}`\n"
-        text += f"🤖 Bot name: `{get_setting('bot_name')}`\n"
-        text += f"🔗 OTP link: `{get_setting('otp_link')}`\n"
+        safe_answer(call)
+        text = f"⚙️ *Settings*\n\n📞 Numbers/user: `{get_setting('numbers_per_user', '3')}`\n💬 Support: `{get_setting('support_contact')}`\n🤖 Bot name: `{get_setting('bot_name')}`\n🔗 OTP link: `{get_setting('otp_link')}`"
         markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(types.InlineKeyboardButton("📞 Set Numbers/User",
-                                              callback_data="adm_set_npu"))
-        markup.add(types.InlineKeyboardButton("🤖 Set Bot Name",
-                                              callback_data="adm_set_botname"))
-        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_back"))
+        markup.add(types.InlineKeyboardButton("📞 Set Numbers/User", callback_data="adm_set_npu", style='primary'))
+        markup.add(types.InlineKeyboardButton("🤖 Set Bot Name", callback_data="adm_set_botname", style='primary'))
+        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_back", style='danger'))
         try:
             bot.edit_message_text(text, chat_id, msg_id, parse_mode='Markdown', reply_markup=markup)
         except:
@@ -1774,22 +1494,21 @@ def handle_admin_callback(call):
         return
 
     if data == "adm_set_npu":
-        bot.answer_callback_query(call.id)
+        safe_answer(call)
         msg = bot.send_message(chat_id, "Send default numbers per user (1-10):",
                                reply_markup=types.ForceReply(selective=True))
         bot.register_next_step_handler(msg, admin_save_npu)
         return
 
     if data == "adm_set_botname":
-        bot.answer_callback_query(call.id)
+        safe_answer(call)
         msg = bot.send_message(chat_id, "Send new bot name:",
                                reply_markup=types.ForceReply(selective=True))
         bot.register_next_step_handler(msg, admin_save_botname)
         return
 
-    # ---- LOGS ----
     if data == "adm_logs":
-        bot.answer_callback_query(call.id)
+        safe_answer(call)
         logs = db.query("SELECT event, details, timestamp FROM logs ORDER BY id DESC LIMIT 30")
         text = "📄 *Recent Logs*\n\n"
         if not logs:
@@ -1797,48 +1516,38 @@ def handle_admin_callback(call):
         for l in logs:
             text += f"🕐 {l[2][:19]}\n🔹 *{l[0]}*: {l[1]}\n\n"
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_back"))
+        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_back", style='danger'))
         try:
             bot.edit_message_text(text[:4000], chat_id, msg_id, parse_mode='Markdown', reply_markup=markup)
         except:
             bot.send_message(chat_id, text[:4000], parse_mode='Markdown', reply_markup=markup)
         return
 
-    # ---- BACKUP ----
     if data == "adm_backup":
-        bot.answer_callback_query(call.id, "💾 Generating...")
+        safe_answer(call, "Generating...")
         try:
-            tables = ['users', 'admins', 'panels', 'services', 'countries', 'numbers',
-                     'settings', 'force_join', 'withdrawals']
+            tables = ['users', 'admins', 'panels', 'services', 'countries', 'numbers', 'settings', 'force_join']
             dump = {'backup_at': datetime.now().isoformat(), 'tables': {}}
             for t in tables:
-                rows = db.query(f"SELECT * FROM {t}")
-                dump['tables'][t] = rows
+                dump['tables'][t] = db.query(f"SELECT * FROM {t}")
             payload = json.dumps(dump)
-            # Split if too long
             if len(payload) < 3900:
-                bot.send_message(chat_id, f"💾 *Backup*\n\n```\n{payload}\n```",
-                                 parse_mode='Markdown')
+                bot.send_message(chat_id, f"💾 *Backup*\n\n```\n{payload}\n```", parse_mode='Markdown')
             else:
-                bot.send_message(chat_id, f"💾 Backup too large for one message ({len(payload)} chars).")
-                bot.send_message(chat_id, f"```\n{payload[:3900]}\n```", parse_mode='Markdown')
-                bot.send_message(chat_id, f"```\n{payload[3900:7800]}\n```", parse_mode='Markdown')
+                bot.send_message(chat_id, f"💾 Backup size: {len(payload)} chars — sending in parts")
+                for i in range(0, len(payload), 3900):
+                    bot.send_message(chat_id, f"```\n{payload[i:i+3900]}\n```", parse_mode='Markdown')
             log_event('backup', f'by {user_id}')
         except Exception as e:
             bot.send_message(chat_id, f"❌ Backup failed: {e}")
         return
 
-    # ---- RESTORE ----
     if data == "adm_restore":
-        bot.answer_callback_query(call.id)
-        msg = bot.send_message(chat_id,
-                               "📥 *Restore*\n\nSend the backup JSON (paste it):",
-                               parse_mode='Markdown',
+        safe_answer(call)
+        msg = bot.send_message(chat_id, "📥 Send backup JSON:",
                                reply_markup=types.ForceReply(selective=True))
         bot.register_next_step_handler(msg, admin_restore)
-        return
-
-# ==================== ADMIN SAVE HANDLERS ====================
+        return# ==================== ADMIN SAVE HANDLERS ====================
 def admin_save_panel(message):
     if not is_admin(message.from_user.id):
         return
@@ -1855,8 +1564,7 @@ def admin_save_panel(message):
             "INSERT INTO panels (name, base_url, username, password, active, created_at) VALUES (?, ?, ?, ?, 1, ?)",
             [name, base_url, username, password, datetime.now().isoformat()]
         )
-        bot.send_message(message.chat.id, f"✅ Panel *{name}* added and activated!",
-                         parse_mode='Markdown')
+        bot.send_message(message.chat.id, f"✅ Panel *{name}* added and activated!", parse_mode='Markdown')
         log_event('admin_add_panel', f"{name} by {message.from_user.id}")
         load_all_dashboards()
         send_admin_panel(message.chat.id)
@@ -1873,10 +1581,8 @@ def admin_update_panel(message, pid):
             bot.send_message(message.chat.id, "❌ Need 4 lines.")
             return
         name, base_url, username, password = lines[0], lines[1], lines[2], lines[3]
-        db.execute(
-            "UPDATE panels SET name=?, base_url=?, username=?, password=? WHERE id=?",
-            [name, base_url, username, password, pid]
-        )
+        db.execute("UPDATE panels SET name=?, base_url=?, username=?, password=? WHERE id=?",
+                   [name, base_url, username, password, pid])
         bot.send_message(message.chat.id, f"✅ Panel #{pid} updated.")
         load_all_dashboards()
         send_admin_panel(message.chat.id)
@@ -1902,14 +1608,11 @@ def admin_save_channel(message):
     try:
         parts = [p.strip() for p in message.text.split('|')]
         if len(parts) < 3:
-            bot.send_message(message.chat.id, "❌ Format: `chat_id | Name | invite_link`",
-                             parse_mode='Markdown')
+            bot.send_message(message.chat.id, "❌ Format: `chat_id | Name | invite_link`", parse_mode='Markdown')
             return
         chat_id, title, link = parts[0], parts[1], parts[2]
-        db.execute(
-            "INSERT INTO force_join (chat_id, chat_title, invite_link, added_at) VALUES (?, ?, ?, ?)",
-            [chat_id, title, link, datetime.now().isoformat()]
-        )
+        db.execute("INSERT INTO force_join (chat_id, chat_title, invite_link, added_at) VALUES (?, ?, ?, ?)",
+                   [chat_id, title, link, datetime.now().isoformat()])
         bot.send_message(message.chat.id, f"✅ Channel *{title}* added.", parse_mode='Markdown')
         log_event('admin_add_channel', f"{title}")
     except Exception as e:
@@ -1936,7 +1639,7 @@ def admin_save_botname(message):
     name = message.text.strip()
     if name and len(name) < 50:
         set_setting('bot_name', name)
-        bot.send_message(message.chat.id, f"✅ Bot name set to *{name}*", parse_mode='Markdown')
+        bot.send_message(message.chat.id, f"✅ Bot name: *{name}*", parse_mode='Markdown')
     else:
         bot.send_message(message.chat.id, "❌ Invalid name.")
 
@@ -1953,44 +1656,9 @@ def admin_save_admin(message):
         return
     try:
         uid = int(message.text.strip())
-        db.execute(
-            "INSERT OR IGNORE INTO admins (user_id, added_by, added_at) VALUES (?, ?, ?)",
-            [uid, message.from_user.id, datetime.now().isoformat()]
-        )
+        db.execute("INSERT OR IGNORE INTO admins (user_id, added_by, added_at) VALUES (?, ?, ?)",
+                   [uid, message.from_user.id, datetime.now().isoformat()])
         bot.send_message(message.chat.id, f"✅ `{uid}` added as admin.", parse_mode='Markdown')
-    except:
-        bot.send_message(message.chat.id, "❌ Invalid ID.")
-
-
-def admin_search_user(message):
-    if not is_admin(message.from_user.id):
-        return
-    try:
-        uid = int(message.text.strip())
-        user = get_user(uid)
-        if not user:
-            bot.send_message(message.chat.id, "❌ User not found.")
-            return
-        assigned = db.query("""
-            SELECT n.phone, c.name, c.code, s.name
-            FROM numbers n
-            JOIN countries c ON n.country_id = c.id
-            JOIN services s ON c.service_id = s.id
-            WHERE n.assigned_to=?
-        """, [uid])
-        text = f"👤 *User Info*\n\n"
-        text += f"🆔 ID: `{user['user_id']}`\n"
-        text += f"📛 Name: {user['first_name']}\n"
-        text += f"🔗 Username: @{user['username'] or 'none'}\n"
-        text += f"📅 First seen: {user['first_seen'][:19]}\n"
-        text += f"📬 OTPs received: `{user['otp_count']}`\n\n"
-        if assigned:
-            text += f"📞 *Assigned Numbers ({len(assigned)}):*\n"
-            for a in assigned:
-                text += f"  • {a[2]}{a[0]} — {a[3]} ({a[1]})\n"
-        else:
-            text += "📞 _No numbers assigned_"
-        bot.send_message(message.chat.id, text[:4000], parse_mode='Markdown')
     except:
         bot.send_message(message.chat.id, "❌ Invalid ID.")
 
@@ -2003,7 +1671,7 @@ def admin_send_broadcast(message):
     sent = failed = 0
     for u in users:
         try:
-            bot.send_message(u[0], f"📢 *Announcement*\n\n{text}", parse_mode='Markdown')
+            bot.send_message(int(u[0]), f"📢 *Announcement*\n\n{text}", parse_mode='Markdown')
             sent += 1
             time.sleep(0.05)
         except:
@@ -2022,7 +1690,7 @@ def admin_send_announcement(message):
             bot.pin_chat_message(CHAT_ID, sent.message_id)
         except:
             pass
-        bot.send_message(message.chat.id, "✅ Announcement sent and pinned to main group.")
+        bot.send_message(message.chat.id, "✅ Announcement sent and pinned.")
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Failed: {e}")
 
@@ -2031,15 +1699,12 @@ def admin_restore(message):
     if not is_admin(message.from_user.id):
         return
     try:
-        raw = message.text.strip()
-        # Remove possible markdown wrappers
-        raw = raw.replace('```json', '').replace('```', '').strip()
+        raw = message.text.strip().replace('```json', '').replace('```', '').strip()
         data = json.loads(raw)
         tables = data.get('tables', {})
         for t, rows in tables.items():
             if not rows:
                 continue
-            # Get column count from first row
             cols_count = len(rows[0])
             placeholders = ','.join(['?'] * cols_count)
             for row in rows:
@@ -2058,21 +1723,19 @@ def wizard_service(message, panel_id):
     if not service_name or len(service_name) > 40:
         bot.send_message(message.chat.id, "❌ Invalid service name.")
         return
-    # Check if already exists for this panel
-    existing = db.query_one("SELECT id FROM services WHERE name=? AND panel_id=?",
-                            [service_name, panel_id])
+    existing = db.query_one("SELECT id FROM services WHERE name=? AND panel_id=?", [service_name, panel_id])
     if existing:
-        sid = existing[0]
+        sid = int(existing[0])
     else:
         db.execute("INSERT INTO services (panel_id, name, created_at) VALUES (?, ?, ?)",
                    [panel_id, service_name, datetime.now().isoformat()])
-        sid = db.query_one("SELECT id FROM services WHERE name=? AND panel_id=?",
-                           [service_name, panel_id])[0]
+        row = db.query_one("SELECT id FROM services WHERE name=? AND panel_id=?", [service_name, panel_id])
+        sid = int(row[0]) if row else None
+    if not sid:
+        bot.send_message(message.chat.id, "❌ Could not create service.")
+        return
     msg = bot.send_message(message.chat.id,
-                           f"✅ Service: *{service_name}*\n\n"
-                           f"➕ *Step 3/5* — Send the *Country name and code*:\n\n"
-                           f"Format: `CountryName | +Code`\n"
-                           f"Example: `Nigeria | +234`",
+                           f"✅ Service: *{service_name}*\n\n➕ *Step 3/5* — Send *Country name and code*:\n\nFormat: `CountryName | +Code`\nEx: `Nigeria | +234`",
                            parse_mode='Markdown',
                            reply_markup=types.ForceReply(selective=True))
     bot.register_next_step_handler(msg, wizard_country, sid)
@@ -2089,19 +1752,15 @@ def wizard_country(message, service_id):
         name, code = parts[0], parts[1]
         if not code.startswith('+'):
             code = '+' + code.lstrip('+')
-        db.execute(
-            "INSERT INTO countries (service_id, name, code, numbers_per_user, created_at) VALUES (?, ?, ?, ?, ?)",
-            [service_id, name, code, int(get_setting('numbers_per_user', '3')), datetime.now().isoformat()]
-        )
-        cid = db.query_one(
-            "SELECT id FROM countries WHERE service_id=? AND name=?",
-            [service_id, name]
-        )[0]
+        db.execute("INSERT INTO countries (service_id, name, code, numbers_per_user, created_at) VALUES (?, ?, ?, ?, ?)",
+                   [service_id, name, code, int(get_setting('numbers_per_user', '3')), datetime.now().isoformat()])
+        row = db.query_one("SELECT id FROM countries WHERE service_id=? AND name=?", [service_id, name])
+        cid = int(row[0]) if row else None
+        if not cid:
+            bot.send_message(message.chat.id, "❌ Could not create country.")
+            return
         msg = bot.send_message(message.chat.id,
-                               f"✅ Country: *{name}* ({code})\n\n"
-                               f"➕ *Step 4/5* — Now *paste the numbers*:\n\n"
-                               f"Separated by commas, spaces, or new lines.\n"
-                               f"Example:\n`8097716173, 8097716408, 8097717000`",
+                               f"✅ Country: *{name}* ({code})\n\n➕ *Step 4/5* — *Paste the numbers*:\n\nSeparated by commas, spaces, or new lines.\nEx:\n`8097716173, 8097716408, 8097717000`",
                                parse_mode='Markdown',
                                reply_markup=types.ForceReply(selective=True))
         bot.register_next_step_handler(msg, wizard_numbers, cid)
@@ -2121,29 +1780,19 @@ def wizard_numbers(message, country_id):
             if clean and len(clean) >= 6:
                 numbers.append(clean)
         if not numbers:
-            bot.send_message(message.chat.id, "❌ No valid numbers found.")
+            bot.send_message(message.chat.id, "❌ No valid numbers.")
             return
-
         now = datetime.now().isoformat()
         added = 0
         for num in numbers:
-            existing = db.query_one(
-                "SELECT id FROM numbers WHERE phone=? AND country_id=?",
-                [num, country_id]
-            )
+            existing = db.query_one("SELECT id FROM numbers WHERE phone=? AND country_id=?", [num, country_id])
             if existing:
                 continue
-            db.execute(
-                "INSERT INTO numbers (country_id, phone, assigned_to, created_at) VALUES (?, ?, 0, ?)",
-                [country_id, num, now]
-            )
+            db.execute("INSERT INTO numbers (country_id, phone, assigned_to, created_at) VALUES (?, ?, 0, ?)",
+                       [country_id, num, now])
             added += 1
-
         msg = bot.send_message(message.chat.id,
-                               f"✅ Added *{added}* numbers (skipped {len(numbers) - added} dupes).\n\n"
-                               f"➕ *Step 5/5* — Numbers *per user* for this country?\n\n"
-                               f"Current default is `{get_setting('numbers_per_user', '3')}`.\n"
-                               f"Send a number (1-10) or `skip` to use default.",
+                               f"✅ Added *{added}* numbers (skipped {len(numbers) - added} dupes).\n\n➕ *Step 5/5* — Numbers *per user* for this country?\n\nCurrent default: `{get_setting('numbers_per_user', '3')}`\nSend a number (1-10) or `skip`.",
                                parse_mode='Markdown',
                                reply_markup=types.ForceReply(selective=True))
         bot.register_next_step_handler(msg, wizard_npu, country_id)
@@ -2160,19 +1809,15 @@ def wizard_npu(message, country_id):
             n = int(txt)
             if 1 <= n <= 10:
                 db.execute("UPDATE countries SET numbers_per_user=? WHERE id=?", [n, country_id])
-            else:
-                bot.send_message(message.chat.id, "⚠️ Out of range. Using default.")
         except:
-            bot.send_message(message.chat.id, "⚠️ Invalid. Using default.")
-    bot.send_message(message.chat.id, "✅ *Number file added successfully!* 🎉",
-                     parse_mode='Markdown')
+            pass
+    bot.send_message(message.chat.id, "✅ *Number file added successfully!* 🎉", parse_mode='Markdown')
     log_event('admin_upload_numbers', f"country {country_id}")
     send_admin_panel(message.chat.id)
 
 
-# ==================== SETUP COMMANDS ====================
+# ==================== COMMANDS ====================
 def setup_bot_commands():
-    """Set menu (☰) commands"""
     commands = [
         types.BotCommand("start", "Start the bot"),
         types.BotCommand("getnumber", "Get a virtual number"),
@@ -2184,9 +1829,9 @@ def setup_bot_commands():
     ]
     try:
         bot.set_my_commands(commands)
-        print("✅ Bot commands set")
+        print("Bot commands set")
     except Exception as e:
-        print(f"⚠️ Could not set commands: {e}")
+        print(f"Could not set commands: {e}")
 
 
 @bot.message_handler(commands=['admin'])
@@ -2199,16 +1844,7 @@ def cmd_admin(message):
 
 @bot.message_handler(commands=['getnumber'])
 def cmd_getnumber(message):
-    user_id = message.from_user.id
-    upsert_user(user_id, message.from_user.username, message.from_user.first_name)
-    if not check_user_joined(user_id):
-        send_force_join_message(message.chat.id, message.from_user.first_name or '')
-        return
-    markup, text = services_menu()
-    if not markup:
-        bot.send_message(message.chat.id, text, parse_mode='Markdown', reply_markup=back_to_main_btn())
-    else:
-        bot.send_message(message.chat.id, text, parse_mode='Markdown', reply_markup=markup)
+    kb_get_number(message)
 
 
 @bot.message_handler(commands=['balance'])
@@ -2226,19 +1862,14 @@ def cmd_support(message):
     kb_support(message)
 
 
-@bot.message_handler(commands=['help'])
-def cmd_help(message):
-    text = """
-❓ *Help*
-
-• *Get Number* — Pick a service and country
-• *Balance* — Check earnings
-• *Withdrawal* — Request payout
-• *Support* — Contact admin
-
-📢 OTP group: tap "View OTP" when you have numbers.
-"""
+@bot.message_handler(commands=['status'])
+def cmd_status(message):
+    panels = get_all_panels()
+    total_users = db.query_one("SELECT COUNT(*) FROM users")
+    total_numbers = db.query_one("SELECT COUNT(*) FROM numbers")
+    text = f"📊 *Bot Status*\n\n🎛️ Active Panels: `{len(panels)}`\n📞 Numbers: `{int(total_numbers[0]) if total_numbers else 0}`\n👥 Users: `{int(total_users[0]) if total_users else 0}`\n\n✅ Running 24/7"
     bot.send_message(message.chat.id, text, parse_mode='Markdown')
+
 
 @bot.message_handler(commands=['debugdb'])
 def cmd_debugdb(message):
@@ -2247,45 +1878,42 @@ def cmd_debugdb(message):
     try:
         panels = db.query("SELECT id, name, base_url, active FROM panels")
         users = db.query("SELECT user_id, first_name FROM users LIMIT 5")
-        text = f"""
-🔍 *DB Debug*
-
-*Panels in DB:* `{len(panels)}`
-"""
+        text = f"🔍 *DB Debug*\n\n*Panels:* `{len(panels)}`\n"
         for p in panels:
-            text += f"  • ID `{p[0]}` — `{p[1]}` — active: `{p[3]}`\n"
-        text += f"\n*Users in DB:* `{len(users)}`\n"
+            text += f"  • `{p[0]}` {p[1]} — active: `{p[3]}`\n"
+        text += f"\n*Users:* `{len(users)}`\n"
         for u in users:
-            text += f"  • `{u[0]}` — {u[1]}\n"
+            text += f"  • `{u[0]}` {u[1]}\n"
         bot.send_message(message.chat.id, text[:4000], parse_mode='Markdown')
     except Exception as e:
         bot.send_message(message.chat.id, f"Debug error: {e}")
 
+
 # ==================== STARTUP ====================
 if __name__ == '__main__':
     print('=' * 50)
-    print('🤖 NBHC OTP Bot v4.0 — Multi-Panel')
+    print('NBHC OTP Bot v5.0 - Multi-Panel')
     print('=' * 50)
 
     db.init_tables()
     setup_bot_commands()
 
-    print('\n🔐 Loading dashboards...')
+    print('\nLoading dashboards...')
     load_all_dashboards()
 
-    print('\n🔐 Initial login to panels...')
+    print('Initial login to panels...')
     for p in get_all_panels():
         threading.Thread(target=lambda d=p: d.login(), daemon=True).start()
 
     time.sleep(3)
     start_all_monitors()
 
-    print('\n✅ Bot is ready!')
-    print('📱 Telegram polling started')
+    print('\nBot is ready!')
+    print('Telegram polling started')
 
     while True:
         try:
             bot.polling(none_stop=True, timeout=60)
         except Exception as e:
-            print(f'⚠️ Polling error: {e}')
+            print(f'Polling error: {e}')
             time.sleep(5)
