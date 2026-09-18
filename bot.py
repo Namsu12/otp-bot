@@ -220,14 +220,14 @@ class DB:
             self.execute(sql)
 
         defaults = {
-            'otp_link': 'https://t.me/alohaotp',
-            'support_contact': '@your_username',
-            'numbers_per_user': '3',
-            'country_code_default': '1',
-            'force_join_enabled': '0',
-            'bot_name': 'NBHC OTP Bot',
-        }
-        for k, v in defaults.items():
+    'otp_link': 'https://t.me/alohaotp',
+    'support_contact': '@your_username',
+    'numbers_per_user': '3',
+    'country_code_default': '1',
+    'force_join_enabled': '0',
+    'bot_name': 'NBHC OTP Bot',
+}
+for k, v in defaults.items():
     self.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", [k, v])
 
 test_result = self.execute(
