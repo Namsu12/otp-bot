@@ -15,7 +15,12 @@ from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-import libsql_client
+try:
+    import libsql_experimental as libsql
+    LIBSQL_OK = True
+except Exception as e:
+    print(f"libsql not available: {e}")
+    LIBSQL_OK = False
 
 # ==================== CONFIG ====================
 BOT_TOKEN = os.getenv('BOT_TOKEN', '')
@@ -37,40 +42,28 @@ bot = telebot.TeleBot(BOT_TOKEN)
 
 # ==================== TURSO DATABASE ====================
 class DB:
-
-
-
-    
     def __init__(self):
         self.url = TURSO_URL
         self.auth = TURSO_TOKEN
         self.lock = threading.Lock()
-        print(f"Turso: {self.url}")
+        print(f"Turso URL: {self.url}")
+        if not LIBSQL_OK:
+            print("WARNING: libsql_experimental is not installed!")
 
     def execute(self, sql, params=None):
+        if not LIBSQL_OK:
+            return None
         with self.lock:
             try:
-                import asyncio
-                import libsql_client
-
-                http_url = self.url.replace('wss://', 'https://').replace('libsql://', 'https://')
-
-                async def run():
-                    client = libsql_client.create_client(url=http_url, auth_token=self.auth)
-                    try:
-                        if params:
-                            result = await client.execute(sql, params)
-                        else:
-                            result = await client.execute(sql)
-                    finally:
-                        try:
-                            await client.close()
-                        except:
-                            pass
-                    if hasattr(result, 'rows'):
-                        return [list(r) for r in result.rows]
-                    return []
-                return asyncio.run(run())
+                conn = libsql.connect(database=self.url, auth_token=self.auth)
+                cur = conn.execute(sql, params or [])
+                try:
+                    rows = cur.fetchall()
+                except Exception:
+                    rows = []
+                conn.commit()
+                conn.close()
+                return [list(r) for r in rows] if rows else []
             except Exception as e:
                 print(f"DB error: {e}")
                 return None
@@ -85,16 +78,78 @@ class DB:
 
     def init_tables(self):
         tables = [
-            "CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, first_seen TEXT, otp_count INTEGER DEFAULT 0, verified INTEGER DEFAULT 0)",
-            "CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY, added_by INTEGER, added_at TEXT)",
-            "CREATE TABLE IF NOT EXISTS panels (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, base_url TEXT, username TEXT, password TEXT, active INTEGER DEFAULT 1, last_check TEXT, created_at TEXT)",
-            "CREATE TABLE IF NOT EXISTS services (id INTEGER PRIMARY KEY AUTOINCREMENT, panel_id INTEGER, name TEXT, created_at TEXT)",
-            "CREATE TABLE IF NOT EXISTS countries (id INTEGER PRIMARY KEY AUTOINCREMENT, service_id INTEGER, name TEXT, code TEXT, numbers_per_user INTEGER DEFAULT 3, created_at TEXT)",
-            "CREATE TABLE IF NOT EXISTS numbers (id INTEGER PRIMARY KEY AUTOINCREMENT, country_id INTEGER, phone TEXT, assigned_to INTEGER DEFAULT 0, assigned_at TEXT, created_at TEXT)",
-            "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)",
-            "CREATE TABLE IF NOT EXISTS force_join (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT, chat_title TEXT, invite_link TEXT, added_at TEXT)",
-            "CREATE TABLE IF NOT EXISTS withdrawals (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, amount REAL, method TEXT, details TEXT, status TEXT DEFAULT 'pending', requested_at TEXT, processed_at TEXT)",
-            "CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT, details TEXT, timestamp TEXT)",
+            """CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                first_seen TEXT,
+                otp_count INTEGER DEFAULT 0,
+                verified INTEGER DEFAULT 0
+            )""",
+            """CREATE TABLE IF NOT EXISTS admins (
+                user_id INTEGER PRIMARY KEY,
+                added_by INTEGER,
+                added_at TEXT
+            )""",
+            """CREATE TABLE IF NOT EXISTS panels (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                base_url TEXT,
+                username TEXT,
+                password TEXT,
+                active INTEGER DEFAULT 1,
+                last_check TEXT,
+                created_at TEXT
+            )""",
+            """CREATE TABLE IF NOT EXISTS services (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                panel_id INTEGER,
+                name TEXT,
+                created_at TEXT
+            )""",
+            """CREATE TABLE IF NOT EXISTS countries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                service_id INTEGER,
+                name TEXT,
+                code TEXT,
+                numbers_per_user INTEGER DEFAULT 3,
+                created_at TEXT
+            )""",
+            """CREATE TABLE IF NOT EXISTS numbers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                country_id INTEGER,
+                phone TEXT,
+                assigned_to INTEGER DEFAULT 0,
+                assigned_at TEXT,
+                created_at TEXT
+            )""",
+            """CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )""",
+            """CREATE TABLE IF NOT EXISTS force_join (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT,
+                chat_title TEXT,
+                invite_link TEXT,
+                added_at TEXT
+            )""",
+            """CREATE TABLE IF NOT EXISTS withdrawals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                amount REAL,
+                method TEXT,
+                details TEXT,
+                status TEXT DEFAULT 'pending',
+                requested_at TEXT,
+                processed_at TEXT
+            )""",
+            """CREATE TABLE IF NOT EXISTS logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event TEXT,
+                details TEXT,
+                timestamp TEXT
+            )""",
         ]
         for sql in tables:
             self.execute(sql)
@@ -112,10 +167,12 @@ class DB:
 
         check = self.query("SELECT value FROM settings WHERE key=?", ['otp_link'])
         print(f"DB write test: {check}")
+
         print("Database initialized")
 
 
 db = DB()
+
 
 # ==================== HELPERS ====================
 def get_setting(key, default=''):
@@ -886,17 +943,11 @@ def handle_callback(call):
                 pass
             return
 
-
-            if data.startswith("copy_"):
-                num = data.replace("copy_", "", 1)
-                safe_answer(call, "📋 Tap to copy!")
-                try:
-                    bot.delete_message(call.message.chat.id, call.message.message_id)
-                    except:
-                        pass
-                        bot.send_message(call.message.chat.id, f"`{num}`", parse_mode='Markdown')
-                        return
-
+        if data.startswith("copy_"):
+            num = data.replace("copy_", "", 1)
+            safe_answer(call)
+            bot.send_message(call.message.chat.id, f"📋 Copy this number:\n\n`{num}`", parse_mode='Markdown')
+            return
 
         if data == "admin_panel":
             if not is_admin(user_id):
@@ -1650,44 +1701,28 @@ def wizard_country(message, service_id):
             bot.send_message(message.chat.id, "❌ Could not create country.")
             return
         msg = bot.send_message(message.chat.id,
-                       f"✅ Country: *{name}* ({code})\n\n➕ *Step 4/5* - Send numbers:\n\n• *Paste* numbers (commas/spaces/newlines)\n• OR *upload a .txt file*\n\n💡 _For large lists, use .txt upload._",
-                       parse_mode='Markdown',
-                       reply_markup=types.ForceReply(selective=True))
-bot.register_next_step_handler(msg, wizard_numbers, cid)
+                               f"✅ Country: *{name}* ({code})\n\n➕ *Step 4/5* - *Paste numbers*:\n\nSeparated by commas, spaces, or new lines.",
+                               parse_mode='Markdown',
+                               reply_markup=types.ForceReply(selective=True))
+        bot.register_next_step_handler(msg, wizard_numbers, cid)
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Error: {e}")
+
 
 def wizard_numbers(message, country_id):
     if not is_admin(message.from_user.id):
         return
     try:
-        raw = ""
-        if message.document:
-            try:
-                file_info = bot.get_file(message.document.file_id)
-                downloaded = bot.download_file(file_info.file_path)
-                raw = downloaded.decode('utf-8', errors='ignore')
-                bot.send_message(message.chat.id, f"📄 File received: {message.document.file_name}")
-            except Exception as e:
-                bot.send_message(message.chat.id, f"❌ Could not read file: {e}")
-                return
-        elif message.text:
-            raw = message.text.strip()
-        else:
-            bot.send_message(message.chat.id, "❌ Send numbers as text OR upload a .txt file.")
-            return
-
-        parts = re.split(r'[\n,\s;]+', raw)
+        raw = message.text.strip()
+        parts = re.split(r'[\n,\s]+', raw)
         numbers = []
         for p in parts:
             clean = re.sub(r'[^\d]', '', p)
             if clean and len(clean) >= 6:
                 numbers.append(clean)
-
         if not numbers:
-            bot.send_message(message.chat.id, "❌ No valid numbers found.")
+            bot.send_message(message.chat.id, "❌ No valid numbers.")
             return
-
         now = datetime.now().isoformat()
         added = 0
         for num in numbers:
@@ -1697,15 +1732,13 @@ def wizard_numbers(message, country_id):
             db.execute("INSERT INTO numbers (country_id, phone, assigned_to, created_at) VALUES (?, ?, 0, ?)",
                        [country_id, num, now])
             added += 1
-
         msg = bot.send_message(message.chat.id,
-                               f"✅ Added *{added}* numbers (skipped {len(numbers) - added} dupes).\n\n➕ *Step 5/5* - Numbers *per user*?\n\nSend 1-10 or `skip`.",
+                               f"✅ Added *{added}* numbers.\n\n➕ *Step 5/5* - Numbers *per user*?\n\nSend 1-10 or `skip`.",
                                parse_mode='Markdown',
                                reply_markup=types.ForceReply(selective=True))
         bot.register_next_step_handler(msg, wizard_npu, country_id)
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Error: {e}")
-
 
 
 def wizard_npu(message, country_id):
