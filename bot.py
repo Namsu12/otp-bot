@@ -887,10 +887,14 @@ def handle_callback(call):
             return
 
         if data.startswith("copy_"):
-            num = data.replace("copy_", "", 1)
-            safe_answer(call)
-            bot.send_message(call.message.chat.id, f"📋 Copy this number:\n\n`{num}`", parse_mode='Markdown')
-            return
+    num = data.replace("copy_", "", 1)
+    safe_answer(call, "📋 Tap to copy!")
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except:
+        pass
+    bot.send_message(call.message.chat.id, f"`{num}`", parse_mode='Markdown')
+    return
 
         if data == "admin_panel":
             if not is_admin(user_id):
@@ -1651,21 +1655,37 @@ def wizard_country(message, service_id):
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Error: {e}")
 
-
 def wizard_numbers(message, country_id):
     if not is_admin(message.from_user.id):
         return
     try:
-        raw = message.text.strip()
-        parts = re.split(r'[\n,\s]+', raw)
+        raw = ""
+        if message.document:
+            try:
+                file_info = bot.get_file(message.document.file_id)
+                downloaded = bot.download_file(file_info.file_path)
+                raw = downloaded.decode('utf-8', errors='ignore')
+                bot.send_message(message.chat.id, f"📄 File received: {message.document.file_name}")
+            except Exception as e:
+                bot.send_message(message.chat.id, f"❌ Could not read file: {e}")
+                return
+        elif message.text:
+            raw = message.text.strip()
+        else:
+            bot.send_message(message.chat.id, "❌ Send numbers as text OR upload a .txt file.")
+            return
+
+        parts = re.split(r'[\n,\s;]+', raw)
         numbers = []
         for p in parts:
             clean = re.sub(r'[^\d]', '', p)
             if clean and len(clean) >= 6:
                 numbers.append(clean)
+
         if not numbers:
-            bot.send_message(message.chat.id, "❌ No valid numbers.")
+            bot.send_message(message.chat.id, "❌ No valid numbers found.")
             return
+
         now = datetime.now().isoformat()
         added = 0
         for num in numbers:
@@ -1675,13 +1695,15 @@ def wizard_numbers(message, country_id):
             db.execute("INSERT INTO numbers (country_id, phone, assigned_to, created_at) VALUES (?, ?, 0, ?)",
                        [country_id, num, now])
             added += 1
+
         msg = bot.send_message(message.chat.id,
-                               f"✅ Added *{added}* numbers.\n\n➕ *Step 5/5* - Numbers *per user*?\n\nSend 1-10 or `skip`.",
+                               f"✅ Added *{added}* numbers (skipped {len(numbers) - added} dupes).\n\n➕ *Step 5/5* - Numbers *per user*?\n\nSend 1-10 or `skip`.",
                                parse_mode='Markdown',
                                reply_markup=types.ForceReply(selective=True))
         bot.register_next_step_handler(msg, wizard_npu, country_id)
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Error: {e}")
+
 
 
 def wizard_npu(message, country_id):
