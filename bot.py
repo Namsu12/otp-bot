@@ -887,18 +887,15 @@ def handle_callback(call):
             return
 
 
-       if data.startswith("copy_"):
-        num = data.replace("copy_", "", 1)
-    safe_answer(call, "📋 Tap to copy!")
-    try:
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-    except:
-        pass
-    bot.send_message(call.message.chat.id, f"`{num}`", parse_mode='Markdown')
-    return
-
-
-
+            if data.startswith("copy_"):
+                num = data.replace("copy_", "", 1)
+                safe_answer(call, "📋 Tap to copy!")
+                try:
+                    bot.delete_message(call.message.chat.id, call.message.message_id)
+                    except:
+                        pass
+                        bot.send_message(call.message.chat.id, f"`{num}`", parse_mode='Markdown')
+                        return
 
 
         if data == "admin_panel":
