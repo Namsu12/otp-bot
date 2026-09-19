@@ -1648,10 +1648,10 @@ def wizard_country(message, service_id):
             bot.send_message(message.chat.id, "❌ Could not create country.")
             return
         msg = bot.send_message(message.chat.id,
-                               f"✅ Country: *{name}* ({code})\n\n➕ *Step 4/5* - *Paste numbers*:\n\nSeparated by commas, spaces, or new lines.",
-                               parse_mode='Markdown',
-                               reply_markup=types.ForceReply(selective=True))
-        bot.register_next_step_handler(msg, wizard_numbers, cid)
+                       f"✅ Country: *{name}* ({code})\n\n➕ *Step 4/5* - Send numbers:\n\n• *Paste* numbers (commas/spaces/newlines)\n• OR *upload a .txt file*\n\n💡 _For large lists, use .txt upload._",
+                       parse_mode='Markdown',
+                       reply_markup=types.ForceReply(selective=True))
+bot.register_next_step_handler(msg, wizard_numbers, cid)
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Error: {e}")
 
