@@ -25,6 +25,10 @@ SUPER_ADMIN = int(os.getenv('SUPER_ADMIN', '8993161626'))
 TURSO_URL = os.getenv('TURSO_URL', '')
 TURSO_TOKEN = os.getenv('TURSO_TOKEN', '')
 
+# New API defaults
+DEFAULT_API_BASE = 'https://mbcs-ms.com/crapi/mbc/viewstats'
+DEFAULT_API_RECORDS = 100
+
 if not BOT_TOKEN or not CHAT_ID:
     print("ERROR: BOT_TOKEN and CHAT_ID must be set!")
     exit(1)
@@ -47,7 +51,6 @@ class DB:
         with self.lock:
             try:
                 import asyncio
-
                 http_url = self.url.replace('wss://', 'https://').replace('libsql://', 'https://')
 
                 async def run():
@@ -79,21 +82,98 @@ class DB:
         return rows[0] if rows else None
 
     def init_tables(self):
+        # ---- CLEAN SLATE: Drop old tables ----
+        print("Dropping old tables...")
+        old_tables = ['users', 'admins', 'panels', 'services', 'countries',
+                      'numbers', 'settings', 'force_join', 'withdrawals', 'logs']
+        for t in old_tables:
+            self.execute(f"DROP TABLE IF EXISTS {t}")
+        print("Old tables dropped.")
+
+        # ---- CREATE fresh tables ----
         tables = [
-            "CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, first_seen TEXT, otp_count INTEGER DEFAULT 0, verified INTEGER DEFAULT 0)",
-            "CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY, added_by INTEGER, added_at TEXT)",
-            "CREATE TABLE IF NOT EXISTS panels (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, base_url TEXT, username TEXT, password TEXT, active INTEGER DEFAULT 1, last_check TEXT, created_at TEXT)",
-            "CREATE TABLE IF NOT EXISTS services (id INTEGER PRIMARY KEY AUTOINCREMENT, panel_id INTEGER, name TEXT, short_code TEXT, created_at TEXT)",
-            "CREATE TABLE IF NOT EXISTS countries (id INTEGER PRIMARY KEY AUTOINCREMENT, service_id INTEGER, name TEXT, code TEXT, short_code TEXT, numbers_per_user INTEGER DEFAULT 3, created_at TEXT)",
-            "CREATE TABLE IF NOT EXISTS numbers (id INTEGER PRIMARY KEY AUTOINCREMENT, country_id INTEGER, phone TEXT, assigned_to INTEGER DEFAULT 0, assigned_at TEXT, created_at TEXT)",
-            "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)",
-            "CREATE TABLE IF NOT EXISTS force_join (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT, chat_title TEXT, invite_link TEXT, added_at TEXT)",
-            "CREATE TABLE IF NOT EXISTS withdrawals (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, amount REAL, method TEXT, details TEXT, status TEXT DEFAULT 'pending', requested_at TEXT, processed_at TEXT)",
-            "CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT, details TEXT, timestamp TEXT)",
+            """CREATE TABLE users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                first_seen TEXT,
+                otp_count INTEGER DEFAULT 0,
+                country_code_on INTEGER DEFAULT 1
+            )""",
+            """CREATE TABLE admins (
+                user_id INTEGER PRIMARY KEY,
+                added_by INTEGER,
+                added_at TEXT
+            )""",
+            """CREATE TABLE panels (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                type TEXT DEFAULT 'api',
+                api_token TEXT,
+                api_base TEXT,
+                base_url TEXT,
+                username TEXT,
+                password TEXT,
+                active INTEGER DEFAULT 1,
+                last_check TEXT,
+                created_at TEXT
+            )""",
+            """CREATE TABLE services (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                panel_id INTEGER,
+                name TEXT,
+                short_code TEXT,
+                created_at TEXT
+            )""",
+            """CREATE TABLE countries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                service_id INTEGER,
+                name TEXT,
+                code TEXT,
+                short_code TEXT,
+                numbers_per_user INTEGER DEFAULT 3,
+                created_at TEXT
+            )""",
+            """CREATE TABLE numbers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                country_id INTEGER,
+                phone TEXT,
+                assigned_to INTEGER DEFAULT 0,
+                assigned_at TEXT,
+                created_at TEXT
+            )""",
+            """CREATE TABLE settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )""",
+            """CREATE TABLE force_join (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT,
+                chat_title TEXT,
+                invite_link TEXT,
+                added_at TEXT
+            )""",
+            """CREATE TABLE withdrawals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                amount REAL,
+                method TEXT,
+                details TEXT,
+                status TEXT DEFAULT 'pending',
+                requested_at TEXT,
+                processed_at TEXT
+            )""",
+            """CREATE TABLE logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event TEXT,
+                details TEXT,
+                timestamp TEXT
+            )""",
         ]
         for sql in tables:
             self.execute(sql)
 
+        # Defaults
         defaults = {
             'otp_link': 'https://t.me/alohaotp',
             'support_contact': '@your_username',
@@ -110,7 +190,7 @@ class DB:
 
         check = self.query("SELECT value FROM settings WHERE key=?", ['otp_link'])
         print(f"DB write test: {check}")
-        print("Database initialized")
+        print("Database initialized (clean slate)")
 
 
 db = DB()
@@ -143,7 +223,7 @@ def get_all_admins():
 def upsert_user(user_id, username, first_name):
     try:
         db.execute(
-            "INSERT OR IGNORE INTO users (user_id, username, first_name, first_seen, otp_count, verified) VALUES (?, ?, ?, ?, 0, 0)",
+            "INSERT OR IGNORE INTO users (user_id, username, first_name, first_seen, otp_count, country_code_on) VALUES (?, ?, ?, ?, 0, 1)",
             [user_id, username or '', first_name or '', datetime.now().isoformat()]
         )
     except Exception as e:
@@ -151,13 +231,13 @@ def upsert_user(user_id, username, first_name):
 
 
 def get_user(user_id):
-    row = db.query_one("SELECT user_id, username, first_name, first_seen, otp_count, verified FROM users WHERE user_id=?", [user_id])
+    row = db.query_one("SELECT user_id, username, first_name, first_seen, otp_count, country_code_on FROM users WHERE user_id=?", [user_id])
     if not row:
         return None
     return {
         'user_id': int(row[0]), 'username': row[1], 'first_name': row[2],
         'first_seen': row[3], 'otp_count': int(row[4]) if row[4] else 0,
-        'verified': int(row[5]) if row[5] else 0
+        'country_code_on': int(row[5]) if row[5] is not None else 1
     }
 
 
@@ -172,11 +252,111 @@ def log_event(event, details=''):
 
 
 def get_active_panels():
-    return db.query("SELECT id, name, base_url, username, password FROM panels WHERE active=1")
+    return db.query("SELECT id, name, type, api_token, api_base, base_url, username, password FROM panels WHERE active=1")
+    
+    # ==================== API DASHBOARD ====================
+class APIDashboard:
+    def __init__(self, panel_id, name, api_token, api_base):
+        self.panel_id = panel_id
+        self.name = name
+        self.api_token = api_token
+        self.api_base = api_base or DEFAULT_API_BASE
+        self.records = DEFAULT_API_RECORDS
+        self.processed_sms = set()
+        self.last_check = None
+        self.is_logged_in = True  # API panels don't need login
+        print(f"[{self.name}] API panel loaded")
+
+    def fetch_sms(self):
+        try:
+            url = self.api_base
+            params = {
+                'token': self.api_token,
+                'records': self.records
+            }
+            resp = requests.get(url, params=params, timeout=15)
+            if resp.status_code != 200:
+                print(f"[{self.name}] API error: {resp.status_code}")
+                return []
+            data = resp.json()
+            if data.get('status') != 'success':
+                print(f"[{self.name}] API not success: {data.get('status')}")
+                return []
+            self.last_check = datetime.now()
+            return self.extract_sms(data.get('data', []))
+        except Exception as e:
+            print(f"[{self.name}] API fetch error: {e}")
+            return []
+
+    def extract_sms(self, items):
+        results = []
+        for item in items:
+            try:
+                cli = (item.get('cli') or '').strip()
+                dt = (item.get('dt') or '').strip()
+                message = (item.get('message') or '').strip()
+                num = (item.get('num') or '').strip()
+                if not message or not num:
+                    continue
+                if len(message) < 5:
+                    continue
+
+                otp = self.find_otp(message)
+                if not otp:
+                    continue
+
+                clean_number = re.sub(r'[^\d]', '', num)
+                if not clean_number:
+                    continue
+
+                row_hash = hashlib.md5(f"{self.panel_id}|{dt}|{num}|{message}".encode()).hexdigest()
+                if row_hash in self.processed_sms:
+                    continue
+
+                results.append({
+                    'panel_id': self.panel_id,
+                    'panel_name': self.name,
+                    'date': dt,
+                    'number': clean_number,
+                    'raw_number': num,
+                    'cli': cli,
+                    'sms': message,
+                    'otp': otp,
+                    'hash': row_hash,
+                })
+            except Exception as e:
+                print(f"Parse error: {e}")
+                continue
+        return results
+
+    def find_otp(self, text):
+        patterns = [
+            r'(?:OTP|code|verification|pin)[:\s\-]*(\d{4,8})',
+            r'#\s*(\d{4,8})',
+            r'(?:is|:)\s*(\d{4,8})\b',
+            r'\b(\d{6})\b',
+            r'\b(\d{5})\b',
+            r'\b(\d{4})\b',
+        ]
+        for p in patterns:
+            m = re.search(p, text, re.IGNORECASE)
+            if m:
+                otp = m.group(1) if m.lastindex else m.group(0)
+                if otp.isdigit() and 4 <= len(otp) <= 8:
+                    return otp
+        return None
+
+    def login(self):
+        # API doesn't need login
+        self.is_logged_in = True
+        return True
+
+    def get_balance(self):
+        return "N/A"
 
 
-# ==================== DASHBOARD SCRAPER ====================
-class Dashboard:
+# ==================== SCRAPE DASHBOARD (Legacy) ====================
+class ScrapeDashboard:
     def __init__(self, panel_id, name, base_url, username, password):
         self.panel_id = panel_id
         self.name = name
@@ -218,7 +398,6 @@ class Dashboard:
             form = soup.find('form')
             if not form:
                 return False
-
             action = form.get('action', '')
             if action.startswith('http'):
                 submit_url = action
@@ -226,10 +405,8 @@ class Dashboard:
                 submit_url = f'{self.base_url}/{action.lstrip("/")}'
             else:
                 submit_url = self.login_url
-
             data = {}
             captcha_field = None
-
             for inp in form.find_all('input'):
                 name = inp.get('name') or inp.get('id')
                 itype = inp.get('type', 'text')
@@ -244,7 +421,6 @@ class Dashboard:
                     data[name] = self.password
                 elif any(k in name.lower() for k in ['capt', 'verif', 'answer', 'result', 'math']):
                     captcha_field = name
-
             page_text = soup.get_text()
             if captcha_field:
                 captcha_input = form.find('input', {'name': captcha_field})
@@ -253,15 +429,11 @@ class Dashboard:
                 ans = self.solve_captcha(q_text) or self.solve_captcha(page_text)
                 if ans:
                     data[captcha_field] = ans
-
             data.setdefault('submit', 'Login')
-
             self.session.headers.update({'Referer': self.login_url, 'Origin': self.base_url})
             resp = self.session.post(submit_url, data=data, timeout=15, allow_redirects=True)
-
             self.is_logged_in = 'login' not in resp.url.lower()
             return self.is_logged_in
-
         except Exception as e:
             print(f'[{self.name}] Login error: {e}')
             return False
@@ -328,6 +500,7 @@ class Dashboard:
     def find_otp(self, text):
         patterns = [
             r'(?:OTP|code|verification|pin)[:\s\-]*(\d{4,8})',
+            r'#\s*(\d{4,8})',
             r'(?:is|:)\s*(\d{4,8})\b',
             r'\b(\d{6})\b',
             r'\b(\d{5})\b',
@@ -366,18 +539,27 @@ active_dashboards = {}
 dashboards_lock = threading.Lock()
 
 
+def create_dashboard(row):
+    """Row: id, name, type, api_token, api_base, base_url, username, password"""
+    panel_id, name, ptype, api_token, api_base, base_url, username, password = row
+    pid = int(panel_id)
+    if ptype == 'api':
+        return APIDashboard(pid, name, api_token, api_base)
+    else:
+        return ScrapeDashboard(pid, name, base_url, username, password)
+
+
 def load_all_dashboards():
     with dashboards_lock:
         panels = get_active_panels()
         new_map = {}
         for p in panels:
-            panel_id, name, base_url, username, password = p
-            pid = int(panel_id)
+            pid = int(p[0])
             if pid in active_dashboards:
                 new_map[pid] = active_dashboards[pid]
             else:
-                new_map[pid] = Dashboard(pid, name, base_url, username, password)
-                print(f"Loaded panel: {name}")
+                new_map[pid] = create_dashboard(p)
+                print(f"Loaded panel: {p[1]} ({p[2]})")
         active_dashboards.clear()
         active_dashboards.update(new_map)
 
@@ -389,7 +571,6 @@ def get_all_panels():
 
 # ==================== OTP FORMATTING ====================
 def format_otp_dashed(otp):
-    """Format OTP like 960-051"""
     otp = re.sub(r'[^\d]', '', otp)
     if len(otp) == 6:
         return f"{otp[:3]}-{otp[3:]}"
@@ -404,7 +585,6 @@ def format_otp_dashed(otp):
 
 
 def format_full_number(phone, country_code, otp):
-    """Format like +234-8097-°°°°°-0051"""
     phone = re.sub(r'[^\d]', '', phone)
     first_4 = phone[:4] if len(phone) >= 4 else phone
     otp_clean = re.sub(r'[^\d]', '', otp)
@@ -413,7 +593,6 @@ def format_full_number(phone, country_code, otp):
 
 
 def get_country_flag(country_name):
-    """Return emoji flag for country"""
     flags = {
         'nigeria': '🇳🇬', 'usa': '🇺🇸', 'united states': '🇺🇸',
         'uk': '🇬🇧', 'united kingdom': '🇬🇧', 'india': '🇮🇳',
@@ -421,13 +600,13 @@ def get_country_flag(country_name):
         'canada': '🇨🇦', 'germany': '🇩🇪', 'france': '🇫🇷',
         'philippines': '🇵🇭', 'indonesia': '🇮🇩', 'pakistan': '🇵🇰',
         'bangladesh': '🇧🇩', 'egypt': '🇪🇬', 'morocco': '🇲🇦',
+        'benin': '🇧🇯', 'togo': '🇹🇬', 'ivory coast': '🇨🇮',
     }
     return flags.get(country_name.lower(), '🌍')
 
 
 # ==================== OTP ROUTING ====================
 def find_number_info(phone_clean):
-    """Find country and service info for a given phone number"""
     row = db.query_one("""
         SELECT n.assigned_to, c.name, c.code, c.short_code, s.name, s.short_code, c.id
         FROM numbers n
@@ -448,57 +627,51 @@ def find_number_info(phone_clean):
     }
 
 
+def safe_delete(chat_id, message_id):
+    try:
+        bot.delete_message(chat_id, message_id)
+    except:
+        pass
+
+
 def send_otp_to_users(sms):
     phone = sms['number']
     otp = sms['otp']
-    cli = sms.get('cli', 'Unknown')
-
     info = find_number_info(phone)
     if not info:
-        # Unassigned number — skip or send basic
         return
-
     user_id = info['assigned_to']
     country_flag = get_country_flag(info['country_name'])
     country_short = f"#{info['country_short']}" if info['country_short'] else ''
     service_short = f"#{info['service_short']}" if info['service_short'] else ''
-
     full_number = format_full_number(phone, info['country_code'], otp)
     otp_dashed = format_otp_dashed(otp)
     bot_name = get_setting('bot_name', 'Alpha Bot')
 
-    # ---- To assigned user (simple format) ----
     if user_id:
         user_msg = f"🔐 *{otp_dashed}*\n\n📱 `{full_number}`\n📨 {info['service_name']}"
         try:
             sent_msg = bot.send_message(user_id, user_msg, parse_mode='Markdown')
             db.execute("UPDATE users SET otp_count = otp_count + 1 WHERE user_id=?", [user_id])
-            # Auto-delete after 5 min
             auto_del = int(get_setting('autodelete_seconds', '300'))
             if auto_del > 0:
                 threading.Timer(auto_del, lambda: safe_delete(user_id, sent_msg.message_id)).start()
         except Exception as e:
             print(f"DM failed for {user_id}: {e}")
 
-    # ---- To group (formatted professional) ----
     chat_url = get_setting('chat_url', 'https://t.me/alphaverify121')
     numbers_url = get_setting('numbers_url', 'https://t.me/alphaverify12')
-
     group_header = f"{bot_name}\n{country_flag} {country_short} 📱 {service_short} {full_number} #English"
-
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
         types.InlineKeyboardButton("Chat", url=chat_url, style='primary'),
         types.InlineKeyboardButton("Numbers", url=numbers_url, style='primary')
     )
-
     try:
         sent_group = bot.send_message(CHAT_ID, group_header, parse_mode='Markdown', reply_markup=markup)
-        # Send OTP as separate tappable message
         otp_markup = types.InlineKeyboardMarkup()
         otp_markup.add(types.InlineKeyboardButton(f"📋 {otp_dashed}", callback_data=f"copyotp_{otp_dashed}", style='success'))
         otp_sent = bot.send_message(CHAT_ID, f"`{otp_dashed}`", parse_mode='Markdown', reply_markup=otp_markup)
-        # Auto-delete after 5 min
         auto_del = int(get_setting('autodelete_seconds', '300'))
         if auto_del > 0:
             threading.Timer(auto_del, lambda: safe_delete(CHAT_ID, sent_group.message_id)).start()
@@ -507,13 +680,6 @@ def send_otp_to_users(sms):
         print(f"Group send failed: {e}")
 
     log_event('OTP', f"{otp} for {phone} -> user {user_id}")
-
-
-def safe_delete(chat_id, message_id):
-    try:
-        bot.delete_message(chat_id, message_id)
-    except:
-        pass
 
 
 def monitor_panel(dashboard):
@@ -542,9 +708,9 @@ def start_all_monitors():
     for d in panels:
         threading.Thread(target=monitor_panel, args=(d,), daemon=True).start()
     print(f"Started {len(panels)} monitor thread(s)")
-
-
-# ==================== FORCE JOIN ====================
+    
+    
+    # ==================== FORCE JOIN ====================
 def get_force_join_channels():
     return db.query("SELECT id, chat_id, chat_title, invite_link FROM force_join ORDER BY id")
 
@@ -657,7 +823,7 @@ def numbers_screen(user_id, service_id, country_id):
 
     n_per_user = int(country[2]) if country[2] else 3
     code = country[1]
-    code_on = user['verified'] if user else 1
+    code_on = user['country_code_on'] if user else 1
 
     assigned = db.query(
         "SELECT id, phone FROM numbers WHERE assigned_to=? AND country_id=? ORDER BY id",
@@ -683,47 +849,39 @@ def numbers_screen(user_id, service_id, country_id):
     stock_count = int(stock[0]) if stock else 0
 
     if assigned:
-        display_nums = []
+        lines = []
         for n in assigned:
             raw = n[1]
             if code_on:
-                display_nums.append(f"{code}{raw}" if not raw.startswith(code) else raw)
+                num_display = f"{code}{raw}" if not raw.startswith(code) else raw
             else:
-                display_nums.append(raw)
-        assigned_text = "\n".join([f"• 📱 `{d}`" for d in display_nums])
+                num_display = raw
+            lines.append(f"• 📱 `{num_display}`")
+        numbers_block = "\n".join(lines)
     else:
-        assigned_text = "_No numbers available right now._"
+        numbers_block = "_No numbers available right now._"
 
     title = f"🌍 *{country[0]} ({service[0]}) - {len(assigned)} Numbers Assigned:*"
-    text = f"{title}\n\n*Country:* {country[0]} - {code}\n\n{assigned_text}\n\n📦 *Stock Left:* {stock_count}\n⏳ _Waiting for OTP..._"
+    text = (
+        f"{title}\n\n"
+        f"*Country:* {country[0]} - {code}\n\n"
+        f"{numbers_block}\n\n"
+        f"_👆 Tap any number to copy it_\n\n"
+        f"📦 *Stock Left:* {stock_count}\n"
+        f"⏳ _Waiting for OTP..._"
+    )
 
-    markup = types.InlineKeyboardMarkup(row_width=1)
-
-    for n in assigned:
-        raw = n[1]
-        if code_on:
-            num_display = f"{code}{raw}" if not raw.startswith(code) else raw
-        else:
-            num_display = raw
-        markup.add(types.InlineKeyboardButton(
-            f"📋 {num_display}",
-            callback_data=f"copy_{num_display}",
-            style='success'
-        ))
-
+    markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(types.InlineKeyboardButton("🔄 Change Numbers", callback_data=f"chgnum_{service_id}_{country_id}", style='primary'))
-    markup.row(
+    markup.add(
         types.InlineKeyboardButton("🌍 Change Country", callback_data=f"svc_{service_id}", style='success'),
         types.InlineKeyboardButton("⚙️ Change Service", callback_data="get_number", style='primary')
     )
-
     toggle_label = "🟢 Country Code: ON" if code_on else "🔴 Country Code: OFF"
     toggle_style = 'success' if code_on else 'danger'
     markup.add(types.InlineKeyboardButton(toggle_label, callback_data=f"togglecc_{service_id}_{country_id}", style=toggle_style))
-
     otp_link = get_setting('otp_link', 'https://t.me/alohaotp')
     markup.add(types.InlineKeyboardButton("📬 View OTP", url=otp_link, style='primary'))
-
     markup.add(types.InlineKeyboardButton("🔙 Main Menu", callback_data="back_main", style='danger'))
 
     return markup, text
@@ -735,11 +893,9 @@ def cmd_start(message):
     user_id = message.from_user.id
     first_name = message.from_user.first_name or 'Friend'
     upsert_user(user_id, message.from_user.username, first_name)
-
     if not check_user_joined(user_id):
         send_force_join_message(message.chat.id, first_name)
         return
-
     text = f"👋 *Welcome to {get_setting('bot_name', 'Alpha Bot')}*\n\nGet virtual numbers, receive OTPs, and manage your account - all from here.\n\n*Hello {first_name}!*\n\nUse the buttons below 👇"
     bot.send_message(message.chat.id, text, parse_mode='Markdown', reply_markup=reply_keyboard(user_id))
 
@@ -901,8 +1057,8 @@ def handle_callback(call):
             parts = data.split("_")
             svc_id, ctry_id = int(parts[1]), int(parts[2])
             user = get_user(user_id)
-            new_val = 0 if user['verified'] else 1
-            db.execute("UPDATE users SET verified=? WHERE user_id=?", [new_val, user_id])
+            new_val = 0 if user['country_code_on'] else 1
+            db.execute("UPDATE users SET country_code_on=? WHERE user_id=?", [new_val, user_id])
             safe_answer(call, "Toggled!")
             markup, text = numbers_screen(user_id, svc_id, ctry_id)
             try:
@@ -913,24 +1069,9 @@ def handle_callback(call):
                 pass
             return
 
-        if data.startswith("copy_"):
-            num = data.replace("copy_", "", 1)
-            safe_answer(call, "📋 Tap to copy!")
-            try:
-                bot.delete_message(call.message.chat.id, call.message.message_id)
-            except:
-                pass
-            bot.send_message(call.message.chat.id, f"`{num}`", parse_mode='Markdown')
-            return
-
         if data.startswith("copyotp_"):
             otp = data.replace("copyotp_", "", 1)
             safe_answer(call, "✅ Copied!")
-            try:
-                bot.delete_message(call.message.chat.id, call.message.message_id)
-            except:
-                pass
-            bot.send_message(call.message.chat.id, f"`{otp}`", parse_mode='Markdown')
             return
 
         if data == "admin_panel":
@@ -949,9 +1090,9 @@ def handle_callback(call):
         print(f"Callback error: {e}")
         traceback.print_exc()
         safe_answer(call, "⚠️ Error")
-
-
-# ==================== ADMIN PANEL ====================
+        
+        
+        # ==================== ADMIN PANEL ====================
 def send_admin_panel(chat_id):
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -1014,18 +1155,19 @@ def handle_admin_callback(call):
     # ---- PANELS ----
     if data == "adm_panels":
         safe_answer(call)
-        panels = db.query("SELECT id, name, base_url, active FROM panels ORDER BY id")
+        panels = db.query("SELECT id, name, type, active FROM panels ORDER BY id")
         text = "🎛️ *Panels*\n\n"
         if not panels:
             text += "_No panels added yet._"
         else:
             for p in panels:
                 status = "🟢" if p[3] and int(p[3]) == 1 else "🔴"
-                text += f"{status} *{p[1]}*\n   URL: `{p[2]}`\n\n"
+                ptype = "🌐 API" if p[2] == 'api' else "🕸️ Scrape"
+                text += f"{status} *{p[1]}* ({ptype})\n\n"
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(
-            types.InlineKeyboardButton("➕ Add Panel", callback_data="adm_add_panel", style='success'),
-            types.InlineKeyboardButton("✏️ Edit Panel", callback_data="adm_edit_panel", style='primary')
+            types.InlineKeyboardButton("➕ Add API", callback_data="adm_add_api", style='success'),
+            types.InlineKeyboardButton("➕ Add Scrape", callback_data="adm_add_scrape", style='success')
         )
         markup.add(
             types.InlineKeyboardButton("🗑️ Delete Panel", callback_data="adm_del_panel", style='danger'),
@@ -1038,45 +1180,27 @@ def handle_admin_callback(call):
             bot.send_message(chat_id, text[:4000], parse_mode='Markdown', reply_markup=markup)
         return
 
-    if data == "adm_add_panel":
+    # ---- ADD API PANEL ----
+    if data == "adm_add_api":
         safe_answer(call)
         msg = bot.send_message(chat_id,
-                               "🎛️ *Add Panel*\n\nSend in this format (4 lines):\n\n```\nPanel Name\nhttp://panel-url.com/ints\nusername\npassword\n```",
+                               "🌐 *Add API Panel*\n\nSend in this format (2 lines):\n\n```\nPanel Name\nAPI Token\n```\n\nOptional 3rd line for custom API base URL\n(leave out to use default)",
                                parse_mode='Markdown',
                                reply_markup=types.ForceReply(selective=True))
-        bot.register_next_step_handler(msg, admin_save_panel)
+        bot.register_next_step_handler(msg, admin_save_api_panel)
         return
 
-    if data == "adm_edit_panel":
+    # ---- ADD SCRAPE PANEL ----
+    if data == "adm_add_scrape":
         safe_answer(call)
-        panels = db.query("SELECT id, name FROM panels ORDER BY id")
-        if not panels:
-            bot.send_message(chat_id, "❌ No panels to edit.")
-            return
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        for p in panels:
-            markup.add(types.InlineKeyboardButton(f"✏️ {p[1]}", callback_data=f"adm_editp_{p[0]}", style='primary'))
-        markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_panels", style='danger'))
-        try:
-            bot.edit_message_text("✏️ Pick a panel to edit:", chat_id, msg_id, parse_mode='Markdown', reply_markup=markup)
-        except:
-            pass
-        return
-
-    if data.startswith("adm_editp_"):
-        pid = int(data.split("_")[2])
-        safe_answer(call)
-        panel = db.query_one("SELECT name, base_url, username, password FROM panels WHERE id=?", [pid])
-        if not panel:
-            bot.send_message(chat_id, "❌ Panel not found")
-            return
         msg = bot.send_message(chat_id,
-                               f"✏️ *Edit Panel #{pid}*\n\nCurrent:\nName: `{panel[0]}`\nURL: `{panel[1]}`\nUser: `{panel[2]}`\n\nSend new values (4 lines)",
+                               "🕸️ *Add Scrape Panel*\n\nSend in this format (4 lines):\n\n```\nPanel Name\nhttp://panel-url.com/ints\nusername\npassword\n```",
                                parse_mode='Markdown',
                                reply_markup=types.ForceReply(selective=True))
-        bot.register_next_step_handler(msg, admin_update_panel, pid)
+        bot.register_next_step_handler(msg, admin_save_scrape_panel)
         return
 
+    # ---- DELETE PANEL ----
     if data == "adm_del_panel":
         safe_answer(call)
         panels = db.query("SELECT id, name FROM panels ORDER BY id")
@@ -1107,6 +1231,7 @@ def handle_admin_callback(call):
         send_admin_panel(chat_id)
         return
 
+    # ---- TOGGLE PANEL ----
     if data == "adm_toggle_panel":
         safe_answer(call)
         panels = db.query("SELECT id, name, active FROM panels ORDER BY id")
@@ -1445,7 +1570,7 @@ def handle_admin_callback(call):
         try:
             bot.edit_message_text(text, chat_id, msg_id, parse_mode='Markdown', reply_markup=markup)
         except:
-            pass
+            bot.send_message(chat_id, text, parse_mode='Markdown', reply_markup=markup)
         return
 
     if data == "adm_set_botname":
@@ -1468,7 +1593,7 @@ def handle_admin_callback(call):
 
     if data == "adm_set_autodel":
         safe_answer(call)
-        msg = bot.send_message(chat_id, "Send auto-delete seconds (e.g. 300 = 5 min, 0 = never):",
+        msg = bot.send_message(chat_id, "Send auto-delete seconds (300 = 5 min, 0 = never):",
                                reply_markup=types.ForceReply(selective=True))
         bot.register_next_step_handler(msg, admin_save_autodel)
         return
@@ -1514,10 +1639,33 @@ def handle_admin_callback(call):
         msg = bot.send_message(chat_id, "📥 Send backup JSON:", reply_markup=types.ForceReply(selective=True))
         bot.register_next_step_handler(msg, admin_restore)
         return
+        
+        
+        # ==================== ADMIN SAVE HANDLERS ====================
+def admin_save_api_panel(message):
+    if not is_admin(message.from_user.id):
+        return
+    try:
+        lines = [l.strip() for l in message.text.strip().split('\n') if l.strip()]
+        if len(lines) < 2:
+            bot.send_message(message.chat.id, "❌ Need at least 2 lines: Name + Token")
+            return
+        name = lines[0]
+        token = lines[1]
+        api_base = lines[2] if len(lines) > 2 else DEFAULT_API_BASE
+        db.execute(
+            "INSERT INTO panels (name, type, api_token, api_base, active, created_at) VALUES (?, 'api', ?, ?, 1, ?)",
+            [name, token, api_base, datetime.now().isoformat()]
+        )
+        bot.send_message(message.chat.id, f"✅ API Panel *{name}* added!", parse_mode='Markdown')
+        log_event('admin_add_panel', f"API {name}")
+        load_all_dashboards()
+        send_admin_panel(message.chat.id)
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Error: {e}")
 
 
-# ==================== ADMIN SAVE HANDLERS ====================
-def admin_save_panel(message):
+def admin_save_scrape_panel(message):
     if not is_admin(message.from_user.id):
         return
     try:
@@ -1529,28 +1677,12 @@ def admin_save_panel(message):
         if not base_url.startswith('http'):
             bot.send_message(message.chat.id, "❌ URL must start with http.")
             return
-        db.execute("INSERT INTO panels (name, base_url, username, password, active, created_at) VALUES (?, ?, ?, ?, 1, ?)",
-                   [name, base_url, username, password, datetime.now().isoformat()])
-        bot.send_message(message.chat.id, f"✅ Panel *{name}* added!", parse_mode='Markdown')
-        log_event('admin_add_panel', name)
-        load_all_dashboards()
-        send_admin_panel(message.chat.id)
-    except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Error: {e}")
-
-
-def admin_update_panel(message, pid):
-    if not is_admin(message.from_user.id):
-        return
-    try:
-        lines = [l.strip() for l in message.text.strip().split('\n') if l.strip()]
-        if len(lines) < 4:
-            bot.send_message(message.chat.id, "❌ Need 4 lines.")
-            return
-        name, base_url, username, password = lines[0], lines[1], lines[2], lines[3]
-        db.execute("UPDATE panels SET name=?, base_url=?, username=?, password=? WHERE id=?",
-                   [name, base_url, username, password, pid])
-        bot.send_message(message.chat.id, f"✅ Panel #{pid} updated.")
+        db.execute(
+            "INSERT INTO panels (name, type, base_url, username, password, active, created_at) VALUES (?, 'scrape', ?, ?, ?, 1, ?)",
+            [name, base_url, username, password, datetime.now().isoformat()]
+        )
+        bot.send_message(message.chat.id, f"✅ Scrape Panel *{name}* added!", parse_mode='Markdown')
+        log_event('admin_add_panel', f"Scrape {name}")
         load_all_dashboards()
         send_admin_panel(message.chat.id)
     except Exception as e:
@@ -1701,7 +1833,7 @@ def admin_restore(message):
         bot.send_message(message.chat.id, f"❌ Restore failed: {e}")
 
 
-# ==================== UPLOAD WIZARD ====================
+# ==================== WIZARD ====================
 def wizard_service(message, panel_id):
     if not is_admin(message.from_user.id):
         return
@@ -1709,14 +1841,11 @@ def wizard_service(message, panel_id):
     if not service_name or len(service_name) > 40:
         bot.send_message(message.chat.id, "❌ Invalid name.")
         return
-    existing = db.query_one("SELECT id FROM services WHERE name=? AND panel_id=?", [service_name, panel_id])
-    if existing:
-        sid = int(existing[0])
-    else:
-        db.execute("INSERT INTO services (panel_id, name, short_code, created_at) VALUES (?, ?, '', ?)",
-                   [panel_id, service_name, datetime.now().isoformat()])
-        row = db.query_one("SELECT id FROM services WHERE name=? AND panel_id=?", [service_name, panel_id])
-        sid = int(row[0]) if row else None
+    db.execute("INSERT INTO services (panel_id, name, short_code, created_at) VALUES (?, ?, '', ?)",
+               [panel_id, service_name, datetime.now().isoformat()])
+    row = db.query_one("SELECT id FROM services WHERE panel_id=? AND name=? ORDER BY id DESC LIMIT 1",
+                       [panel_id, service_name])
+    sid = int(row[0]) if row else None
     if not sid:
         bot.send_message(message.chat.id, "❌ Could not create service.")
         return
@@ -1748,20 +1877,21 @@ def wizard_country(message, service_id):
     try:
         parts = [p.strip() for p in message.text.split('|')]
         if len(parts) < 2:
-            bot.send_message(message.chat.id, "❌ Format: `Country | +Code`")
+            bot.send_message(message.chat.id, "❌ Format: `CountryName | +Code`\nEx: `USA | +1`")
             return
         name, code = parts[0], parts[1]
         if not code.startswith('+'):
             code = '+' + code.lstrip('+')
         db.execute("INSERT INTO countries (service_id, name, code, short_code, numbers_per_user, created_at) VALUES (?, ?, ?, '', ?, ?)",
                    [service_id, name, code, int(get_setting('numbers_per_user', '3')), datetime.now().isoformat()])
-        row = db.query_one("SELECT id FROM countries WHERE service_id=? AND name=?", [service_id, name])
+        row = db.query_one("SELECT id FROM countries WHERE service_id=? AND name=? ORDER BY id DESC LIMIT 1",
+                           [service_id, name])
         cid = int(row[0]) if row else None
         if not cid:
             bot.send_message(message.chat.id, "❌ Could not create country.")
             return
         msg = bot.send_message(message.chat.id,
-                               f"✅ Country: *{name}* ({code})\n\n➕ *Step 5/6* - Send *Country short code*:\n\nEx: `NG` (for Nigeria)\nEx: `US` (for USA)",
+                               f"✅ Country: *{name}* ({code})\n\n➕ *Step 5/6* - Send *Country short code*:\n\nEx: `NG` (Nigeria)\nEx: `US` (USA)",
                                parse_mode='Markdown',
                                reply_markup=types.ForceReply(selective=True))
         bot.register_next_step_handler(msg, wizard_country_short, cid)
@@ -1778,7 +1908,7 @@ def wizard_country_short(message, country_id):
         return
     db.execute("UPDATE countries SET short_code=? WHERE id=?", [sc, country_id])
     msg = bot.send_message(message.chat.id,
-                           f"✅ Country code: `#{sc}`\n\n➕ *Step 6/6* - Send numbers:\n\n• *Paste* numbers (commas/spaces/newlines)\n• OR *upload a .txt file*\n\n💡 For large lists, use .txt",
+                           f"✅ Country code: `#{sc}`\n\n➕ *Step 6/6* - Send numbers:\n\n• *Paste* numbers (with country code)\n• OR *upload a .txt file*\n\nEx: `2290140603743`",
                            parse_mode='Markdown',
                            reply_markup=types.ForceReply(selective=True))
     bot.register_next_step_handler(msg, wizard_numbers, country_id)
@@ -1808,11 +1938,11 @@ def wizard_numbers(message, country_id):
         numbers = []
         for p in parts:
             clean = re.sub(r'[^\d]', '', p)
-            if clean and len(clean) >= 6:
+            if clean and len(clean) >= 8:
                 numbers.append(clean)
 
         if not numbers:
-            bot.send_message(message.chat.id, "❌ No valid numbers found.")
+            bot.send_message(message.chat.id, "❌ No valid numbers found (need 8+ digits).")
             return
 
         now = datetime.now().isoformat()
@@ -1892,11 +2022,11 @@ def cmd_debugdb(message):
     if not is_admin(message.from_user.id):
         return
     try:
-        panels = db.query("SELECT id, name, base_url, active FROM panels")
+        panels = db.query("SELECT id, name, type, active FROM panels")
         users = db.query("SELECT user_id, first_name FROM users LIMIT 5")
         text = f"🔍 *DB Debug*\n\n*Panels:* `{len(panels)}`\n"
         for p in panels:
-            text += f"  • `{p[0]}` {p[1]}\n"
+            text += f"  • `{p[0]}` {p[1]} ({p[2]})\n"
         text += f"\n*Users:* `{len(users)}`\n"
         for u in users:
             text += f"  • `{u[0]}` {u[1]}\n"
@@ -1908,7 +2038,7 @@ def cmd_debugdb(message):
 # ==================== STARTUP ====================
 if __name__ == '__main__':
     print('=' * 50)
-    print('Alpha OTP Bot v7.0')
+    print('Alpha OTP Bot v9.0')
     print('=' * 50)
 
     db.init_tables()
